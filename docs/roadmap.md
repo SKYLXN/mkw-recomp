@@ -37,7 +37,6 @@ Radeon 660M APU (Ryzen 5 7535HS), Linux, 720p internal resolution.
 - Shader translator bugs found by comparing with another Switch 2 port: three of six fixed, three to go, each
   reapplied alone and checked on a race capture.
 - The kart's shadow misses a frame now and then; two fixes from Ryujinx (MIT) to try.
-- Push constants of constant bank 24 are not passed yet: five programs read zeros.
 - Zero Vulkan validation errors (25 left, 9 kinds), which may be rendering bugs or hangs on other GPUs.
 - Task/mesh shaders as compute: a race on the first thread in the scene lists (bushes and grass).
 
@@ -72,6 +71,7 @@ screen by screen against the console.
   (`recomp/patches-mkw-180.txt`: spin waits, zstd, output size and every set of 1.0.0 — aspect, vertplus (the tall
   Window's race FOV), shadow, seed and LAN play) and runtime row (`runtime/core/boot/version.c`: frame update and game
   clock, zstd, NVN2 proc table and `nvnDeviceGetInteger` answers, boot checkpoint, the new `subsdk1` module's
-  constructors). Still to find in its
-  executable: the menu focus probe; to check in a run: the 30 NVN2 procs new in its sdk (weak stubs but three
-  scheduling hints), its 43 new shader stages and the button icon sheet's hash.
+  constructors, the menu focus probe). Checked (16/11/2026): no game code calls the NVN2 procs new in its sdk (its
+  proc loader stores them and nothing reads them back, `runtime/gfx/nvn/procs/nvn2.c`); its 11 604 shader stages,
+  the 39 inside `exefs/main` included, translate to valid SPIR-V and none is missing in a title, race or photo mode
+  capture; the button icon sheet is recognised by its hash (`runtime/ui/glyphs/glyphs.c`).
