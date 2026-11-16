@@ -1622,6 +1622,15 @@ extern "C" void launcher_set_romfs(const char *romfs) { mods_set_romfs(romfs); }
 extern "C" void launcher_set_exefs(const char *exefs) { mods_set_exefs(exefs); }
 extern "C" void launcher_set_profile(const char *profile) { launcher_players_set_base(profile); }
 
+static void setup_paths_finished(const SetupState *state) {
+    static unsigned seen;
+    if (!state->finished || seen == state->generation) return;
+    seen = state->generation;
+    // prepare.py wrote the linked package/folder (or "romfs" for a copy) into mkw.ini in another process. Play
+    // reexecs and sees it, but without this refresh the Mods page kept startup's missing or previous RomFS.
+    if (state->finished > 0 && cfg_reload_key("MKW_ROMFS")) launcher_refresh_romfs();
+}
+
 extern "C" void launcher_gb_install(const char *url) {
     const char *p = !strncmp(url, "mkw-recomp:", 11) ? url + 11 : url;
     int file = 0, mod = 0;
@@ -1698,9 +1707,11 @@ extern "C" int launcher_run(void) {
     rt_log("launcher: start screen, game files %s, setup tools %s", rt_game_present() ? "ready" : "not set up",
            L.tools ? "present" : "missing");
     for (long frame = 1; L.result < 0; frame++) {
-        if (L.play_after_setup && setup_state().finished) {   // the code mods' build ended: play if it went well
+        SetupState setup = setup_state();
+        setup_paths_finished(&setup);   // before the code-mod merge below, or a new import from this frame's input
+        if (L.play_after_setup && setup.finished) {   // the same snapshot: a new completion must refresh paths first
             L.play_after_setup = 0;
-            if (setup_state().finished > 0) {
+            if (setup.finished > 0) {
                 mods_code_built();
                 mods_merge_sync(L.exe_dir);
                 char player[PLAT_PATH_MAX * 2];
