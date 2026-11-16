@@ -773,6 +773,18 @@ msgstr ""
 "Joy-Con 2 y Pro Controller 2 por Bluetooth. Para emparejar uno, mantén su botón Sync con el juego "
 "abierto. Se aplica en el próximo inicio."
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr "Movimiento desde un servidor DSU"
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+"El giroscopio de un mando que no se lo da al juego, como uno en modo XInput, leído de un servidor "
+"Cemuhook / DSU (DS4Windows, BetterJoy...) en 127.0.0.1:26760 (dsu_server en mkw.ini)."
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "Zona muerta del stick"

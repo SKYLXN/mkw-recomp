@@ -733,6 +733,16 @@ msgid ""
 "open. Applies at the next start."
 msgstr "Bluetooth로 Joy-Con 2와 Pro 컨트롤러 2를 사용합니다. 페어링하려면 게임을 연 채로 싱크로 버튼을 길게 누르세요. 다음 실행부터 적용됩니다."
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr ""
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "스틱 데드존"

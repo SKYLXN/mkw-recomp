@@ -708,6 +708,16 @@ msgid ""
 "open. Applies at the next start."
 msgstr "透過藍牙使用 Joy-Con 2 和 Pro 控制器 2。要配對控制器，請在遊戲開啟時按住其同步按鈕。下次啟動時生效。"
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr ""
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "搖桿死區"

@@ -778,6 +778,16 @@ msgstr ""
 "Joy-Con 2 und Pro Controller 2 über Bluetooth. Zum Koppeln die Sync-Taste bei geöffnetem Spiel "
 "gedrückt halten. Gilt ab dem nächsten Start."
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr ""
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "Stick-Totzone"

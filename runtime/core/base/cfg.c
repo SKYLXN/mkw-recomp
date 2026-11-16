@@ -38,7 +38,7 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BUTTON_ICONS", "CLASSIC_GP", "CLASSIC_VS", "CORE_DIAG", "CRIT", "CRIT_OUT", "CTL", "DESC_TEMPLATE", "DETAIL_DISTANCE", "DEVICE_PROFILE", "DISCORD", "DISCORD_APP", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_DRAWS", "DUMP_DRAWS_RECT", "DUMP_DRAWS_SKIP", "DYN_DIFF", "DUMP_LOG",
+    "BIND_ZL", "BIND_ZR", "BUTTON_ICONS", "CLASSIC_GP", "CLASSIC_VS", "CORE_DIAG", "CRIT", "CRIT_OUT", "CTL", "DESC_TEMPLATE", "DETAIL_DISTANCE", "DEVICE_PROFILE", "DISCORD", "DISCORD_APP", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_DRAWS", "DUMP_DRAWS_RECT", "DUMP_DRAWS_SKIP", "DSU", "DSU_SERVER", "DSU_SLOT", "DYN_DIFF", "DUMP_LOG",
     "EXEFS", "FEEDBACK", "FG_BIAS", "FG_DUMP", "FG_DUMP_DIR", "FG_LAMBDA", "FG_PROBE", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FPS", "FRAMEGEN", "FREEZE_IDLE", "GLYPH_DUMP", "FREE_CORES", "FULLSCREEN", "GAME_DIR", "GPL", "GPL_DRAW_BUILD", "GPU",
     "GPU_CRUMBS", "GPU_CRUMBS_DRAW", "HDR", "HDR_FAKE", "GPU_INDEX", "GPU_MEM_LIMIT", "GPU_NAME", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LAN", "LAN_IP", "LANG", "LATENCY", "LOW_LATENCY",
@@ -67,6 +67,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"BACKGROUND_MUTE", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"BUTTON_ICONS", "input"}, {"MOUSE_SENS", "input"}, {"STICK_DEADZONE", "input"}, {"SWITCH2", "input"}, {"INPUT_RECORD", "input"},
+    {"DSU", "input"}, {"DSU_SERVER", "input"}, {"DSU_SLOT", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -121,6 +122,9 @@ static const CfgMeta metas[] = {
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     {"BUTTON_ICONS", "auto", "auto|nintendo|xbox|playstation|keyboard", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"STICK_DEADZONE", "8", "0..40", LIVE}, {"SWITCH2", "0", "0|1|2", RESTART},
+    // Cemuhook / DSU motion (input/dsu.c, #435): a server's gyro for a gamepad without one; off unless asked for. The
+    // server's address (26760 is the port every DSU server uses) and its slot for player 1 have no menu row
+    {"DSU", "0", "0|1", LIVE}, {"DSU_SERVER", "127.0.0.1:26760", NULL, LIVE}, {"DSU_SLOT", "0", "0..3", LIVE},
     {"MENU_LANG", "", "en|ja|fr|de|it|es|nl|pt|pt-BR|ru|zh-Hans|zh-Hant|ko|es-419|ca|gl|eu|pl|tr|uk|th", LIVE}, {"UPDATE_CHECK", "1", "0|1", LIVE},
     {"DISCORD", "0", "0|1", LIVE},   // Discord Rich Presence (core/presence): off by default, the player's friends see it
     {"MODS", "", NULL, RESTART},   // the Mods page's enabled mods, comma-separated in load order; not a menu row

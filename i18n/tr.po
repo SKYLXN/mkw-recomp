@@ -768,6 +768,16 @@ msgstr ""
 "Bluetooth üzerinden Joy-Con 2 ve Pro Controller 2. Eşleştirmek için oyun açıkken kumandanın Sync "
 "düğmesini basılı tutun. Bir sonraki açılışta uygulanır."
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr ""
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "Çubuk ölü bölgesi"

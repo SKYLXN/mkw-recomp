@@ -770,6 +770,16 @@ msgstr ""
 "Joy-Con 2 i Pro Controller 2 przez Bluetooth. Aby sparować kontroler, przytrzymaj jego przycisk "
 "Sync przy otwartej grze. Działa od następnego uruchomienia."
 
+msgctxt "UI_MENU_DSU"
+msgid "Motion from a DSU server"
+msgstr ""
+
+msgctxt "UI_MENU_DSU_DESC"
+msgid ""
+"The gyro of a controller that gives none to the game, such as one in XInput mode, read from a "
+"Cemuhook / DSU server (DS4Windows, BetterJoy...) at 127.0.0.1:26760 (dsu_server in mkw.ini)."
+msgstr ""
+
 msgctxt "UI_MENU_STICK_DEADZONE"
 msgid "Stick dead zone"
 msgstr "Martwa strefa gałki"
