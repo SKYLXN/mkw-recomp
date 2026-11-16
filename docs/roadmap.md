@@ -24,14 +24,13 @@ with the game (−2.4 ms), submits on their own thread (−1.2 to −1.6 ms), th
 totk-pc-recomp, MIT; −10.6 % recorder instructions on Steam Deck; no measurable frame-time change). Next:
 
 - **Threads on hybrid CPUs**: on an Intel i7-14700F (8 P-cores, 12 E-cores) with an RX 6700 XT, game 1.8.0 at its
-  2560x1440 internal resolution, a race frame took 37.7-39.4 ms median when the scheduler was free to put threads on
-  the E-cores, and 19.2-20.3 ms with the whole process on the P-cores (`taskset -c 0-15`; sl-player, sl-nocap,
-  sl-pcore, sl-pcore2, 16/11/2026). Nothing was saturated: 3.3 CPUs busy of 28 and 2-10 % run-queue wait
-  (`rqwait.py`). What slowed down is the chain itself: the game blocks ~22 ms a frame on a fence value the replay
-  has not recorded yet, and in the race's first, heavier seconds the replay's walk took 3x and the chunks 2x as long
-  as later for the same ~3 100 draws a submission. The replay thread is already on
-  a P-core (#480); the game's threads, the recording chunks, the recorder and the completion thread are not.
-  `plat_cpu_fast` and `plat_process_affinity` are already in the runtime.
+  2560x1440 internal resolution, keeping the frame's threads off the E-cores (`MKW_FAST_CORES`) took a race frame
+  3.6 ms shorter (medians, 6.0 ms means), with the scene balanced by an in-run A/B and its inverted twin (fc-ab1,
+  fc-ab1i, 16/11/2026); the frame is ~20 ms. The replay thread is already on a P-core (#480). A warning for whoever
+  measures this: the same afternoon, every race up to 17:31 took 38-41 ms a frame and every one from 17:33 on 19-22
+  ms, unpinned `main` included (sl-player 37.7, sl-player2 21.2), with no change to the code and the CPU not
+  contended (`rqwait.py`); comparing a `taskset` run of one period with an unpinned run of the other first gave a
+  2x effect that was not there. Compare inside one run (`MKW_AB`).
 - **Less work per draw**: descriptor sets kept across frames by their contents (`MKW_DRAW_CACHE`). On a fast CPU
   (i7-14700F, RADV) it changes nothing measurable: a race capture's recording thread ran the same instructions with
   it on and off, and its binds made ~20 % more descriptor work (sets are allocated) (16/11/2026); left for slower CPUs.
@@ -45,7 +44,7 @@ Radeon 660M APU (Ryzen 5 7535HS), Linux, 720p internal resolution.
 
 Two defaults of the test runs mislead on another machine (16/11/2026): `run_perf.sh` caps the GPU heap at 4096 MiB
 (`MKW_GPU_MEM_LIMIT`, set for the 660M), and on a 12 GB RX 6700 XT the race then took 59 ms a frame against 39-43 ms
-without the cap (sl-base, sl-nocap); and `race.sh`'s 720p needs the RomFS overlay `build/romfs-res`
+without the cap (sl-base, sl-nocap: two runs, both in the slow hour of the item above); and `race.sh`'s 720p needs the RomFS overlay `build/romfs-res`
 (`tools/romfs/resolution.py`): without it the log says "RomFS overlay: none" and a 1.8.0 race renders at 2560x1440
 with a 3840x2160 output. Players have neither: no cap, the game's resolution.
 
