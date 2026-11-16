@@ -550,8 +550,33 @@ static void state_line(bool ok, const char *text) {
     ImGui::TextColored(col4(ok ? LOOK_OK : LOOK_WARN), "%s", text);
 }
 
+// Where the game will read its files (main.c portable_paths, handed over by launcher_set_romfs and _exefs).
+static char g_romfs[PLAT_PATH_MAX * 2], g_exefs[PLAT_PATH_MAX * 2];
+
+// The game files the setup left that are not there now, or NULL: a RomFS package or folder (the "link" mode keeps the
+// player's own copy where it was) or the exefs/ folder. Issue #486: a Steam Deck whose package had gone from where the
+// setup found it booted from Play into a fatal error, and in Gaming Mode the game just closed. Checked at most once a
+// second, so a card or drive connected while the start screen is open is seen.
+static const char *files_gone(void) {
+    static uint64_t at;
+    static const char *gone;
+    uint64_t now = SDL_GetTicks();
+    if (at && now - at < 1000) return gone;
+    at = now;
+    gone = NULL;
+    if (!rt_game_present()) return gone;   // not set up: the files page says that already
+    if (g_romfs[0] && !plat_dir_exists(g_romfs) && !plat_file_exists(g_romfs)) gone = g_romfs;
+    else if (g_exefs[0] && !plat_dir_exists(g_exefs)) gone = g_exefs;
+    if (gone) rt_log("launcher: the game files are not at %s", gone);
+    return gone;
+}
+
 // The game files' state in words, with the version the last setup installed when it is known.
 static void files_state_text(bool ready, char *out, size_t cap) {
+    if (files_gone()) {
+        snprintf(out, cap, "%s", menu_text(UI_LAUNCH_FILES_GONE));
+        return;
+    }
     if (ready && L.game_version[0]) snprintf(out, cap, menu_text(UI_LAUNCH_FILES_READY_AS), L.game_version);
     else snprintf(out, cap, "%s", menu_text(ready ? UI_LAUNCH_FILES_READY : UI_LAUNCH_FILES_MISSING));
 }
@@ -584,7 +609,7 @@ static bool status_link(bool ready) {
 // (launcher_backdrop.cpp): the player's splash.png, or the logo's flag.
 static void page_main(float w, float h) {
     float s = L.scale, left = 96 * s, cw = 440 * s, edge = 56 * s, lh = ImGui::GetTextLineHeight();
-    bool files = rt_game_present(), ready = files && update_state().phase != UPDATE_FETCHING;
+    bool files = rt_game_present() && !files_gone(), ready = files && update_state().phase != UPDATE_FETCHING;
     // the column's height, to centre it: logo and title, the gap, Play, the controllers, the menu, the gap and Quit
     float mark = 84 * s, items = item_height(), gap = 12 * s;
     float play_h = fmaxf(52.0f, 76 * s), pad_h = fmaxf(36.0f, 48 * s);
@@ -1048,7 +1073,14 @@ static void page_files(float w, float h) {
     ImGui::BeginDisabled(L.picking);
     char state[160];
     files_state_text(ready, state, sizeof state);
-    state_line(ready, state);
+    state_line(ready && !files_gone(), state);
+    if (const char *gone = ready ? files_gone() : nullptr) {   // where they were, and what brings them back
+        char help[PLAT_PATH_MAX * 2 + 400];
+        snprintf(help, sizeof help, menu_text(UI_LAUNCH_FILES_GONE_HELP), gone);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + fminf(ImGui::GetContentRegionAvail().x, 620 * L.scale));
+        ImGui::TextWrapped("%s", help);
+        ImGui::PopTextWrapPos();
+    }
     update_card(fminf(ImGui::GetContentRegionAvail().x, 620 * L.scale));   // a folder not set up starts on this page
     if (L.updated[0]) {
         char note[300];
@@ -1618,8 +1650,14 @@ static void save_shot(const char *suffix) {
     SDL_DestroySurface(s);
 }
 
-extern "C" void launcher_set_romfs(const char *romfs) { mods_set_romfs(romfs); }
-extern "C" void launcher_set_exefs(const char *exefs) { mods_set_exefs(exefs); }
+extern "C" void launcher_set_romfs(const char *romfs) {
+    snprintf(g_romfs, sizeof g_romfs, "%s", romfs);
+    mods_set_romfs(romfs);
+}
+extern "C" void launcher_set_exefs(const char *exefs) {
+    snprintf(g_exefs, sizeof g_exefs, "%s", exefs);
+    mods_set_exefs(exefs);
+}
 extern "C" void launcher_set_profile(const char *profile) { launcher_players_set_base(profile); }
 
 extern "C" void launcher_gb_install(const char *url) {
@@ -1662,7 +1700,7 @@ extern "C" int launcher_run(void) {
         }
     }
     L.tools = setup_available(L.exe_dir);
-    if (!rt_game_present() && !L.shot_at) L.page = PAGE_FILES;
+    if ((!rt_game_present() || files_gone()) && !L.shot_at) L.page = PAGE_FILES;
     pads_refresh();
     char state[PLAT_PATH_MAX * 3];
     snprintf(state, sizeof state, "%s/setup-state.json", cfg_game_dir());

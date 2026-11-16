@@ -239,7 +239,10 @@ typedef enum {
     // CONFIRM "... %s ..." (the name)
     UI_LAUNCH_PLAYERS, UI_PLAYER_NOTE, UI_PLAYER_NAME_HINT, UI_PLAYER_CHOOSE, UI_PLAYER_CHOSEN,
     UI_PLAYER_NEW, UI_PLAYER_REMOVE, UI_PLAYER_CONFIRM, UI_PLAYER_FAILED,
-    UI_MENU_LAST_ID = UI_PLAYER_FAILED,
+    // the game files the setup left are not where it left them (launcher.cpp files_gone): the state line, and under it
+    // HELP "... %s ..." (where they were)
+    UI_LAUNCH_FILES_GONE, UI_LAUNCH_FILES_GONE_HELP,
+    UI_MENU_LAST_ID = UI_LAUNCH_FILES_GONE_HELP,
     UI_TEXT_COUNT
 } UiTextId;
 
