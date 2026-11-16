@@ -23,7 +23,18 @@ with the game (−2.4 ms), submits on their own thread (−1.2 to −1.6 ms), th
 (−0.8 ms), the replay thread on its own core (−1.1 ms), dynamic state recorded only when it changes (idea from
 totk-pc-recomp, MIT; −10.6 % recorder instructions on Steam Deck; no measurable frame-time change). Next:
 
-- **Less work per draw**: descriptor sets kept across frames by their contents (`MKW_DRAW_CACHE`).
+- **Threads on hybrid CPUs**: on an Intel i7-14700F (8 P-cores, 12 E-cores) with an RX 6700 XT, game 1.8.0 at its
+  2560x1440 internal resolution, a race frame took 37.7-39.4 ms median when the scheduler was free to put threads on
+  the E-cores, and 19.2-20.3 ms with the whole process on the P-cores (`taskset -c 0-15`; sl-player, sl-nocap,
+  sl-pcore, sl-pcore2, 16/11/2026). Nothing was saturated: 3.3 CPUs busy of 28 and 2-10 % run-queue wait
+  (`rqwait.py`). What slowed down is the chain itself: the game blocks ~22 ms a frame on a fence value the replay
+  has not recorded yet, and in the race's first, heavier seconds the replay's walk took 3x and the chunks 2x as long
+  as later for the same ~3 100 draws a submission. The replay thread is already on
+  a P-core (#480); the game's threads, the recording chunks, the recorder and the completion thread are not.
+  `plat_cpu_fast` and `plat_process_affinity` are already in the runtime.
+- **Less work per draw**: descriptor sets kept across frames by their contents (`MKW_DRAW_CACHE`). On a fast CPU
+  (i7-14700F, RADV) it changes nothing measurable: a race capture's recording thread ran the same instructions with
+  it on and off, and its binds made ~20 % more descriptor work (sets are allocated) (16/11/2026); left for slower CPUs.
 - **Recording in parallel**: chunks of a submit on several threads; today they fight over the texture lock, which has
   to be split first.
 - **The kernel's global lock**: waits by address are done (−1.3 ms\*); the rest of the lock remains.
@@ -31,6 +42,12 @@ totk-pc-recomp, MIT; −10.6 % recorder instructions on Steam Deck; no measurabl
 
 \* Our numbers (not the ones said to come from totk-pc-recomp) were measured on 07-09/11/2026 on our test machine:
 Radeon 660M APU (Ryzen 5 7535HS), Linux, 720p internal resolution.
+
+Two defaults of the test runs mislead on another machine (16/11/2026): `run_perf.sh` caps the GPU heap at 4096 MiB
+(`MKW_GPU_MEM_LIMIT`, set for the 660M), and on a 12 GB RX 6700 XT the race then took 59 ms a frame against 39-43 ms
+without the cap (sl-base, sl-nocap); and `race.sh`'s 720p needs the RomFS overlay `build/romfs-res`
+(`tools/romfs/resolution.py`): without it the log says "RomFS overlay: none" and a 1.8.0 race renders at 2560x1440
+with a 3840x2160 output. Players have neither: no cap, the game's resolution.
 
 ## 2. The picture as on the console
 
@@ -56,7 +73,12 @@ screen by screen against the console.
 ## 5. Loading and the player's side
 
 - The stutter right after a race starts: block-linear deswizzle on the GPU (totk-pc-recomp, MIT: texture waits from
-  900 to 270 ms in that game), VMA reservations on Windows.
+  900 to 270 ms in that game), VMA reservations on Windows. Measured on an i7-14700F (16/11/2026), the CPU deswizzle
+  (`tex_bl_copy`) runs at memcpy speed (16-25 GB/s, 9.6 for a 16 MiB BC7 level), so on the GPU it only pays if the
+  GPU reads the storage from its mirror without a CPU copy. In the course load's peak (1.5 s, user call graphs of the
+  replay thread, tl-fp1) the replay spent ~66 ms in the BC1/BC7 choice for ASTC textures (`astc_alpha_one`, at image
+  creation) and ~44 ms in the deswizzle, both serial on the critical path; spreading them over worker threads is the
+  cheaper step.
 - A Linux package that starts on non-rolling distributions (glibc 2.31 through zig), and the launcher tested on real
   Windows machines.
 - Windows with a dedicated GPU: memory the GPU wrote is not uploaded again to its mirror.
