@@ -2578,3 +2578,15 @@ msgstr "프로필 %s을(를) 제거할까요? 목록에서 사라지지만 세�
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "프로필을 저장하지 못했습니다(이유는 로그에 있습니다)."
+
+msgctxt "UI_LAUNCH_FOUND"
+msgid "Found on this device"
+msgstr ""
+
+msgctxt "UI_LAUNCH_FOUND_SEARCHING"
+msgid "Looking for your copy in the usual places..."
+msgstr ""
+
+msgctxt "UI_LAUNCH_FOUND_FOLDER"
+msgid "folder"
+msgstr ""

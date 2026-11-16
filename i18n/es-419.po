@@ -2669,3 +2669,15 @@ msgstr ""
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "No se pudo guardar el perfil (el registro dice por qué)."
+
+msgctxt "UI_LAUNCH_FOUND"
+msgid "Found on this device"
+msgstr "Encontradas en este equipo"
+
+msgctxt "UI_LAUNCH_FOUND_SEARCHING"
+msgid "Looking for your copy in the usual places..."
+msgstr "Buscando tu copia en los lugares habituales..."
+
+msgctxt "UI_LAUNCH_FOUND_FOLDER"
+msgid "folder"
+msgstr "carpeta"

@@ -2624,3 +2624,15 @@ msgstr ""
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "บันทึกโปรไฟล์ไม่ได้ (ดูสาเหตุในบันทึก)"
+
+msgctxt "UI_LAUNCH_FOUND"
+msgid "Found on this device"
+msgstr ""
+
+msgctxt "UI_LAUNCH_FOUND_SEARCHING"
+msgid "Looking for your copy in the usual places..."
+msgstr ""
+
+msgctxt "UI_LAUNCH_FOUND_FOLDER"
+msgid "folder"
+msgstr ""

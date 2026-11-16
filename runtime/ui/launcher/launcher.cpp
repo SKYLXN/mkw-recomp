@@ -48,6 +48,7 @@
 #include "ui/launcher/launcher_players.h"
 #include "ui/launcher/launcher_setup.h"
 #include "ui/launcher/launcher_tools.h"
+#include "ui/launcher/launcher_finddumps.h"
 #include "ui/launcher/launcher_lastrun.h"
 #include "ui/launcher/launcher_update.h"
 #include "ui/launcher/mods.h"
@@ -940,6 +941,29 @@ static void game_dir_notes(void) {
     }
 }
 
+// The copies tools/prepare/finddumps.py found in the usual places (launcher_finddumps.h), one row each to pick with
+// a controller: in Steam's Gaming Mode the file dialogs above do not open. With no copy chosen yet the first is.
+static void found_copies(void) {
+    FoundDump f[FOUND_MAX];
+    int running = 0, n = finddumps_list(f, FOUND_MAX, &running);
+    if (!n) {
+        if (running) ImGui::TextColored(col4(LOOK_DIM), "%s", menu_text(UI_LAUNCH_FOUND_SEARCHING));
+        return;
+    }
+    if (!L.source[0]) snprintf(L.source, sizeof L.source, "%s", f[0].path);
+    ImGui::Dummy(ImVec2(0, 4 * L.scale));
+    ImGui::TextColored(col4(LOOK_HEADING), "%s", menu_text(UI_LAUNCH_FOUND));
+    for (int i = 0; i < n; i++) {
+        const char *kind = !strcmp(f[i].kind, "folder") ? menu_text(UI_LAUNCH_FOUND_FOLDER)
+                         : !strcmp(f[i].kind, "nx")     ? ".nx"
+                                                        : ".nup";
+        char label[sizeof f[i].path + 96];
+        snprintf(label, sizeof label, "Mario Kart World %s  \xc2\xb7  %s  \xc2\xb7  %s##found%d", f[i].version, kind,
+                 f[i].path, i);
+        if (ImGui::Selectable(label, !strcmp(L.source, f[i].path))) snprintf(L.source, sizeof L.source, "%s", f[i].path);
+    }
+}
+
 // The setup's three steps: the player's copy, how its RomFS is kept, then Set up with the folder it installs to.
 static void setup_steps(const SetupState &st, bool ready, float act_h) {
     float s = L.scale;
@@ -957,6 +981,7 @@ static void setup_steps(const SetupState &st, bool ready, float act_h) {
         L.picking = 1;
         SDL_ShowOpenFileDialog(picked, nullptr, L.win, kPack, 1, nullptr, false);
     }
+    found_copies();
     step_end();
     step_head(2, false, menu_text(UI_LAUNCH_ROMFS_MODE));
     float cw = fminf((ImGui::GetContentRegionAvail().x - 12 * s) * 0.5f, 440 * s);
@@ -1069,7 +1094,8 @@ static void page_files(float w, float h) {
         ImGui::TextWrapped("%s", menu_text(UI_LAUNCH_NO_TOOLS));
     } else if (ready) {
         ImGui::Dummy(ImVec2(0, 8 * L.scale));
-        if (st.running || st.finished) ImGui::SetNextItemOpen(true, ImGuiCond_Always);   // its steps stay in view
+        static bool open_test = getenv("MKW_LAUNCHER_SETUP_OPEN") != nullptr;   // (test) unfolded, for a shot
+        if (st.running || st.finished || open_test) ImGui::SetNextItemOpen(true, ImGuiCond_Always);   // its steps stay in view
         if (ImGui::CollapsingHeader(menu_text(UI_LAUNCH_SETUP_AGAIN))) {
             ImGui::TextColored(col4(LOOK_HEADING), "%s", menu_text(UI_LAUNCH_SETUP_AGAIN_HINT));
             ImGui::Dummy(ImVec2(0, 6 * L.scale));
@@ -1687,6 +1713,8 @@ extern "C" int launcher_run(void) {
         update_check_start(L.exe_dir);
     }
     if (!L.shot_at || getenv("MKW_LAUNCHER_LASTRUN")) lastrun_start(L.exe_dir, cfg_game_dir());
+    // MKW_LAUNCHER_FIND=1 (test): the search in a shot too, as at a plain start
+    if (L.tools && (!L.shot_at || getenv("MKW_LAUNCHER_FIND"))) finddumps_start(L.exe_dir, cfg_game_dir());
     if (getenv("MKW_LAUNCHER_SHORTCUT")) make_shortcut();   // (test) as the button does
     if (const char *t = getenv("MKW_LAUNCHER_SETUP")) {   // (test) the setup started from that folder, as Set up does
         snprintf(L.source, sizeof L.source, "%s", t);
