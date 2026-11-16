@@ -82,3 +82,22 @@ def test_no_steam_pid_is_not_running(tmp_path: Path) -> None:
     assert steam.steam_running(tmp_path / "steam") is False
     (tmp_path / "steam.pid").write_text("not a pid\n")
     assert steam.steam_running(tmp_path / "steam") is False
+
+
+def test_library_art_written_once_and_named_as_the_icon(tmp_path: Path) -> None:
+    """Gaming Mode's images (steam.write_art): the five files as PNGs of their sizes, a file already there (the
+    player's own) kept, and the shortcut's icon the drawn one, since Steam takes none from a Linux executable."""
+    grid, appid = tmp_path / "grid", 2675230854
+    grid.mkdir()
+    (grid / f"{appid}_hero.png").write_bytes(b"the player's own")
+    icon = steam.write_art(grid, appid)
+    sizes = {f"{appid}p.png": (600, 900), f"{appid}.png": (920, 430), f"{appid}_logo.png": (320, 320),
+             f"{appid}_icon.png": (320, 320)}  # fmt: skip
+    for name, (w, h) in sizes.items():
+        data = (grid / name).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", data[16:24]) == (w, h), name
+    assert (grid / f"{appid}_hero.png").read_bytes() == b"the player's own"
+    p = tmp_path / "shortcuts.vdf"
+    steam.add(p, NAME, EXE, "/games/mkw", str(icon))
+    row = steam.read_map(p.read_bytes(), 0)[0]["shortcuts"]["0"]
+    assert row["icon"] == str(icon)
