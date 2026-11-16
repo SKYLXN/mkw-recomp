@@ -41,6 +41,12 @@ identity and MTE tags as 0 (eden-nx2, row 3).
 Every source used, with its license and what is taken from it. From MIT sources code may be taken, citing it; from
 GPL ones and from those without a license, only ideas.
 
+Audio voice-slot semantics checked against [libnx](https://github.com/switchbrew/libnx) at
+`b156b4774fb2df7b93402169509266da7547fc4c` (`nx/source/audio/voice.c`, `audrvVoiceDrop` zeroes unused records) and
+[Ryujinx](https://git.ryujinx.app/ryubing/ryujinx) at `6af327bdd50366163d80bc692f6bf47ec1c1993e`
+(`src/Ryujinx.Audio/Renderer/Server/StateUpdater.cs`, `UpdateVoices1/2` address state by input slot). Both MIT;
+no implementation copied. `runtime/audio/audren.c` follows the slot rule for state and filter parameters.
+
 | Source | License | What is used |
 |---|---|---|
 | [Atmosphere-NX/Atmosphere](https://github.com/Atmosphere-NX/Atmosphere) `libmesosphere` (master, 12/11/2026) | GPL-2.0 | Only knowledge of the Switch kernel's argument checks: `SetThreadCoreMask` (`kern_svc_thread.cpp`: InvalidCoreId for a mask or core outside the process, InvalidCombination for an empty mask or the core outside it; -1 = the process's ideal core alone) and `CreateThread`'s core range |
