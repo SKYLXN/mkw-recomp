@@ -239,7 +239,9 @@ typedef enum {
     // CONFIRM "... %s ..." (the name)
     UI_LAUNCH_PLAYERS, UI_PLAYER_NOTE, UI_PLAYER_NAME_HINT, UI_PLAYER_CHOOSE, UI_PLAYER_CHOSEN,
     UI_PLAYER_NEW, UI_PLAYER_REMOVE, UI_PLAYER_CONFIRM, UI_PLAYER_FAILED,
-    UI_MENU_LAST_ID = UI_PLAYER_FAILED,
+    // General tab: the start screen at start (launcher.cpp console_start), its choices after Automatic
+    UI_MENU_START_SCREEN, UI_MENU_START_SCREEN_DESC, UI_MENU_START_ALWAYS, UI_MENU_START_SKIP,
+    UI_MENU_LAST_ID = UI_MENU_START_SKIP,
     UI_TEXT_COUNT
 } UiTextId;
 
