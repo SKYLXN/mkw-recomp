@@ -218,6 +218,8 @@ static void window_main(void *arg) {
     const char *bg = cfg_get("MKW_BACKGROUND_WINDOW");
     SDL_SetHint(SDL_HINT_APP_ID, bg && strcmp(bg, "0") ? "mkw-recomp-run" : "mkw-recomp");
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
+    const char *steam_drv = cfg_steam_video_driver();   // started by Steam on a Wayland desktop: XWayland (cfg.h)
+    if (steam_drv) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, steam_drv), rt_log("gfx: started by Steam in a Wayland session: SDL's %s driver, so Steam sees the window take the focus (MKW_STEAM_X11=0 for native Wayland)", steam_drv);
     g_video_ok = SDL_Init(SDL_INIT_VIDEO);
     if (!g_video_ok) rt_log("gfx: SDL video init failed (%s)", SDL_GetError());
     // SDL's Vulkan queries need its Vulkan loader, which a window would load at creation: the instance and the device

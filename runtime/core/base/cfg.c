@@ -281,11 +281,37 @@ static const char *raw_get(const char *name) {
     return NULL;
 }
 
+// Started from Steam's Big Picture or Gaming Mode (cfg.h): fullscreen, as a console shows its game; Big Picture stayed
+// visible around a window before.
+static const struct { const char *key, *value; } CONSOLE[] = {{"FULLSCREEN", "1"}};
+
+int cfg_steam_started(void) {
+    const char *id = getenv("SteamGameId"), *app = getenv("SteamAppId");
+    return (id && *id) || (app && *app);
+}
+
+int cfg_steam_console(void) {
+    const char *ui = getenv("SteamGamepadUI"), *tenfoot = getenv("SteamTenfoot"), *gs = getenv("GAMESCOPE_WAYLAND_DISPLAY");
+    return (ui && !strcmp(ui, "1")) || (tenfoot && !strcmp(tenfoot, "1")) || (gs && *gs);
+}
+
+const char *cfg_steam_video_driver(void) {
+    const char *own = getenv("SDL_VIDEODRIVER"), *wl = getenv("WAYLAND_DISPLAY"), *x = getenv("DISPLAY"),
+               *gs = getenv("GAMESCOPE_WAYLAND_DISPLAY"), *off = cfg_get("MKW_STEAM_X11");
+    if ((own && *own) || (gs && *gs) || (off && !strcmp(off, "0")) || !cfg_steam_started()) return NULL;
+    return wl && *wl && x && *x ? "x11" : NULL;
+}
+
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
-    for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
-        if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+    if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
+    if (profile_of()) {
+        for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
+            if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+    } else if (cfg_steam_console()) {
+        for (size_t i = 0; i < sizeof CONSOLE / sizeof *CONSOLE; i++)
+            if (!strcasecmp(CONSOLE[i].key, name + PREFIX_LEN)) return CONSOLE[i].value;
+    }
     return NULL;
 }
 

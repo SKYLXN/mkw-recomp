@@ -1585,16 +1585,18 @@ static bool open_window(void) {
     bool background = bg && *bg && strcmp(bg, "0");
     SDL_SetHint(SDL_HINT_APP_ID, background ? "mkw-recomp-run" : "mkw-recomp");
     if (background) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    if (const char *drv = cfg_steam_video_driver()) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, drv);   // as the game's window (cfg.h)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         rt_log("launcher: SDL_Init failed: %s", SDL_GetError());
         return false;
     }
     float ds = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (!(ds > 0)) ds = 1;
-    // Always a window: the game's MKW_FULLSCREEN is the game's; the start screen goes fullscreen only by its own F11.
+    // A window: the game's MKW_FULLSCREEN is the game's; the start screen goes fullscreen by its own F11, and from
+    // Steam's Big Picture or Gaming Mode (it opened there: a setup to run, a notice), as Big Picture is.
     // Hidden until its first frame is drawn (launcher_run): shown at once, it is black while the first frame is made.
     SDL_WindowFlags f = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN |
-                        (background ? SDL_WINDOW_NOT_FOCUSABLE : 0);
+                        (background ? SDL_WINDOW_NOT_FOCUSABLE : 0) | (cfg_steam_console() && !L.shot_at ? SDL_WINDOW_FULLSCREEN : 0);
     L.win = SDL_CreateWindow("Mario Kart World", (int)(1280 * ds), (int)(720 * ds), f);
     if (L.win) app_icon_set(L.win);
     L.ren = L.win ? SDL_CreateRenderer(L.win, nullptr) : nullptr;
@@ -1637,10 +1639,7 @@ extern "C" void launcher_gb_install(const char *url) {
 
 // Started by Steam's Big Picture or Gaming Mode (on a Steam Deck, Bazzite): Steam marks the games it starts there with
 // SteamGamepadUI=1 (SteamTenfoot=1 before 2023), and Gaming Mode runs them under gamescope.
-static int steam_console(void) {
-    const char *ui = getenv("SteamGamepadUI"), *tenfoot = getenv("SteamTenfoot"), *gs = getenv("GAMESCOPE_WAYLAND_DISPLAY");
-    return (ui && !strcmp(ui, "1")) || (tenfoot && !strcmp(tenfoot, "1")) || (gs && *gs);
-}
+static int steam_console(void) { return cfg_steam_console(); }
 
 // The last game run ended in a fatal error (logs/mkw.log, the previous run's until the next Play moves it): the start
 // screen shows its notice (launcher_lastrun.h) instead of starting a game that may stop the same way.
