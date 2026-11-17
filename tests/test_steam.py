@@ -118,3 +118,19 @@ def test_art_from_the_start_screen_replaces_ours_only(tmp_path: Path) -> None:
     steam.write_art(grid, appid, art)
     assert (grid / f"{appid}p.png").read_bytes() == b"second portrait.png"
     assert (grid / f"{appid}_hero.png").read_bytes() == b"the player's own"
+
+
+def test_a_second_path_replaces_our_shortcut_not_the_players(tmp_path: Path) -> None:
+    """Added again from another program path (the launcher's button after a script, a moved AppImage): the shortcut
+    this script added before is replaced, one Mario Kart World stays; a player's own shortcut of that name stays too."""
+    vdf = tmp_path / "config/shortcuts.vdf"
+    vdf.parent.mkdir()
+    steam.add(vdf, NAME, "/games/old/mkw", "/games/old")
+    old = zlib.crc32(('"/games/old/mkw"' + NAME).encode()) | 0x80000000
+    steam.write_art(tmp_path / "config/grid", old)   # the record that marks it as ours
+    rows = steam.read_map(vdf.read_bytes(), 0)[0]["shortcuts"]
+    rows["1"] = {"appid": -5, "appname": NAME, "Exe": '"/home/me/my-own-mkw.sh"'}   # the player's own, as Steam writes it
+    vdf.write_bytes(b"\x00shortcuts\x00" + steam.write_map(rows) + b"\x08")
+    steam.add(vdf, NAME, "/games/new/mkw", "/games/new")
+    got = [r.get("Exe", r.get("exe")) for r in steam.read_map(vdf.read_bytes(), 0)[0]["shortcuts"].values()]
+    assert got == ['"/home/me/my-own-mkw.sh"', '"/games/new/mkw"']

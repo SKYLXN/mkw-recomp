@@ -186,7 +186,17 @@ def add(vdf: Path, name: str, exe: str, start_dir: str, icon_path: str = "") -> 
     root = read_map(vdf.read_bytes(), 0)[0] if vdf.is_file() and vdf.stat().st_size else {}
     rows = list(root.get("shortcuts", {}).values())
     quoted = f'"{exe}"'
-    rows = [r for r in rows if r.get("Exe", r.get("exe")) != quoted]  # replaced, not doubled
+    grid = vdf.parent / "grid"
+
+    def ours(r: dict) -> bool:
+        """A shortcut this script added before, under another program path (a moved AppImage, the launcher's button
+        and a script both used): its name, and the record of its images (write_art) in grid/. Steam writes the name's
+        key as "appname"; a shortcut the player made keeps no record and stays."""
+        uid = struct.unpack("<I", struct.pack("<i", r.get("appid", 0)))[0] if isinstance(r.get("appid"), int) else 0
+        named = r.get("AppName", r.get("appname")) == name
+        return named and (grid / f"{uid}_mkw-recomp.txt").is_file()
+
+    rows = [r for r in rows if r.get("Exe", r.get("exe")) != quoted and not ours(r)]  # replaced, not doubled
     appid = zlib.crc32((quoted + name).encode()) | 0x80000000
     rows.append({
         "appid": struct.unpack("<i", struct.pack("<I", appid))[0], "AppName": name, "Exe": quoted,
