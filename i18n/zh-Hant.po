@@ -2544,3 +2544,10 @@ msgstr "移除檔案 %s？它會從清單中消失，存檔保留在 profile/pla
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "無法儲存檔案（原因見記錄）。"
+
+#. printf format: keep every %... conversion, in the same order.
+msgctxt "UI_SETUP_ERR_SPACE"
+msgid ""
+"not enough free space: the setup needs %s. Free some space, or choose \"Use it where it is\" for "
+"the RomFS, which needs no copy"
+msgstr ""

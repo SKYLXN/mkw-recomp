@@ -2668,3 +2668,10 @@ msgstr ""
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "No s'ha pogut desar el perfil (el registre diu per què)."
+
+#. printf format: keep every %... conversion, in the same order.
+msgctxt "UI_SETUP_ERR_SPACE"
+msgid ""
+"not enough free space: the setup needs %s. Free some space, or choose \"Use it where it is\" for "
+"the RomFS, which needs no copy"
+msgstr ""

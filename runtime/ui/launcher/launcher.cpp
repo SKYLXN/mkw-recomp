@@ -806,7 +806,8 @@ static void setup_error_text(const SetupState &st, char *out, size_t cap) {
                 {"romfs", UI_SETUP_ERR_ROMFS},         {"failed", UI_SETUP_ERR_FAILED},
                 {"io", UI_SETUP_ERR_IO},               {"stopped", UI_SETUP_ERR_STOPPED},
                 {"cancelled", UI_SETUP_ERR_CANCELLED}, {"no_setup", UI_SETUP_ERR_NO_SETUP},
-                {"moved", UI_SETUP_ERR_MOVED},         {"mismatch", UI_SETUP_ERR_MISMATCH}};
+                {"moved", UI_SETUP_ERR_MOVED},         {"mismatch", UI_SETUP_ERR_MISMATCH},
+                {"space", UI_SETUP_ERR_SPACE}};
     char why[600];
     snprintf(why, sizeof why, "%s", st.error);
     for (const auto &w : kWhy)

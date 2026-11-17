@@ -2578,3 +2578,10 @@ msgstr "프로필 %s을(를) 제거할까요? 목록에서 사라지지만 세�
 msgctxt "UI_PLAYER_FAILED"
 msgid "The profile could not be saved (the log says why)."
 msgstr "프로필을 저장하지 못했습니다(이유는 로그에 있습니다)."
+
+#. printf format: keep every %... conversion, in the same order.
+msgctxt "UI_SETUP_ERR_SPACE"
+msgid ""
+"not enough free space: the setup needs %s. Free some space, or choose \"Use it where it is\" for "
+"the RomFS, which needs no copy"
+msgstr ""
