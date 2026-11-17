@@ -10,6 +10,10 @@
 // same race took 16.8 ms, its GPU busy 5.3 ms a frame instead of 19, and the replay's CPU 4.4 ms instead of 8 (pk1,
 // 17/11/2026); at the standard one (1825 MHz) 18.5 ms (pk-std2). The same machine raced at 19-22 ms whenever
 // something else kept the GPU's clock up, which made runs of one hour twice as slow as the next.
+// Issue #496 (7900 XT: 60 fps with MKW_QUEUE_WAITS=0, 50 with its default 1) is the same clock: the queue waits hold
+// work a little longer, the GPU idles a little more and amdgpu lowers its clock further. In-run A/B of MKW_QUEUE_WAITS
+// and its inverted twin, one player: +15.3 ms a frame (medians) with amdgpu choosing the clock (qw-auto, qw-autoi:
+// 18-19 against 33-34 ms), +0.01 ms with the clock held (qw-pk, qw-pki: 16.7-16.8 both), 17/11/2026.
 //
 // Off by default on integrated GPUs (a Steam Deck, Ryzen APUs) until measured there: their GPU shares the chip's
 // power budget with the CPU, and a peak GPU clock may take it from the game's threads. "ab" holds the peak pstate in
