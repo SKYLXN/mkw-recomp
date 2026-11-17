@@ -121,7 +121,8 @@ int dsu_pad_packet(uint8_t out[DSU_PAD_SIZE], int slot, uint32_t number, uint64_
 // (lying flat, face up: y = -1 G); pitch about x (front edge up positive), yaw about y (turning right positive), roll
 // about z (right side down positive). So against SDL's sensor axes (input_motion_axes) the acceleration is SDL's
 // negated and in G, pitch = SDL x, yaw = -SDL y, roll = -SDL z; through input_motion_axes' SDL -> Switch step:
-// Switch acc = (x, -z, y), Switch gyro = (pitch, roll, -yaw), deg/s to rad/s.
+// Switch acc = (x, -z, y), Switch gyro = (pitch, roll, -yaw), deg/s to rad/s. The PadForge server sends the same from
+// SDL's axes (its accelerometer, yaw and roll negated).
 void dsu_axes(const float a[3], const float g[3], double acc[3], double gyro[3]) {
     const double rad = M_PI / 180;
     acc[0] = a[0];
