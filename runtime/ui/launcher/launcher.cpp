@@ -498,15 +498,67 @@ static bool shortcut_asked(void) {
     return v && *v && strcmp(v, "0");
 }
 
+enum { JOB_BACKUP = 1, JOB_STEAM };   // the Tools page's jobs (launcher_tools.h), the card's Add to Steam too
+static bool shortcut_target(char *exe, size_t cap);
+
+// Add to Steam: tools/prepare/steam.py adds this program as a non-Steam game, with its library images, so Big Picture
+// and Gaming Mode (Bazzite, a Steam Deck) start it; the Tools page and the card below both run it.
+static void steam_add(void) {
+    char exe[PLAT_PATH_MAX * 2];
+    if (!shortcut_target(exe, sizeof exe)) return;
+    const char *args[] = {"add", "--name", "Mario Kart World", "--exe", exe, "--dir", L.exe_dir, nullptr};
+    tool_start(L.exe_dir, JOB_STEAM, "prepare/steam.py", args);
+}
+
+// Add to Steam's result in words ("" while it has none): added, added with Steam to restart, or why it failed.
+static void steam_note(const ToolState &job, char *note, size_t cap, bool *failed) {
+    int users = 0, running = 0;
+    *failed = job.job == JOB_STEAM && job.phase == TOOL_FAILED;
+    note[0] = 0;
+    if (job.job == JOB_STEAM && job.phase == TOOL_DONE && sscanf(job.line, "%d %d", &users, &running) == 2)
+        snprintf(note, cap, "%s", menu_text(running ? UI_TOOLS_STEAM_RESTART : UI_TOOLS_STEAM_DONE));
+    else if (*failed)
+        snprintf(note, cap, menu_text(UI_TOOLS_FAILED),
+                 !strncmp(job.line, "nosteam", 7) ? menu_text(UI_TOOLS_STEAM_NONE) : job.line);
+}
+
+// The card's Add to Steam was pressed this start: the card stays, with its result, until the start screen closes.
+static bool steam_card;
+
+// The next button on this line when it fits the card, else on the next one (three buttons overflow the main page's
+// column in Spanish and German).
+static void same_line_if_fits(const char *label, float right) {
+    float gap = 8 * L.scale, need = ImGui::CalcTextSize(label).x + 2 * ImGui::GetStyle().FramePadding.x;
+    float x = ImGui::GetItemRectMax().x + gap;
+    if (x + need <= right) ImGui::SameLine(0, gap);
+}
+
 static void shortcut_card(float w) {
+    ToolState job = tool_state();
     card_begin(w);
+    float right = ImGui::GetCursorScreenPos().x + w - 2 * card_pad();
     ImGui::TextUnformatted(menu_text(UI_LAUNCH_SHORTCUT_ASK));
     bool make = ImGui::Button(menu_text(UI_LAUNCH_SHORTCUT_MAKE));
-    ImGui::SameLine(0, 8 * L.scale);
+    same_line_if_fits(menu_text(UI_TOOLS_STEAM), right);
+    // Steam's Big Picture and Gaming Mode start the game from its library: one press here instead of finding the Tools
+    // page (a controller-only player on Bazzite or a Steam Deck)
+    ImGui::BeginDisabled(job.phase == TOOL_RUNNING);
+    bool steam = ImGui::Button(menu_text(UI_TOOLS_STEAM));
+    ImGui::EndDisabled();
+    same_line_if_fits(menu_text(UI_LAUNCH_NOT_NOW), right);
     bool later = ImGui::Button(menu_text(UI_LAUNCH_NOT_NOW));
+    char note[800];
+    bool failed = false;
+    if (steam_card) steam_note(job, note, sizeof note, &failed);
+    if (steam_card && note[0]) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w - 2 * card_pad());
+        ImGui::TextColored(col4(failed ? LOOK_WARN : LOOK_OK), "%s", note);
+        ImGui::PopTextWrapPos();
+    }
     card_end(LOOK_LINE, LOOK_ROW);
     if (make) make_shortcut();
-    if (make || later) {
+    if (steam) steam_add(), steam_card = true;
+    if (make || later || steam) {
         cfg_set("MKW_SHORTCUT_ASKED", "1");
         opt_save_soon();
     }
@@ -665,7 +717,7 @@ static void page_main(float w, float h) {
     intro_apply(dl, v0, intro(7));
     ImGui::PopStyleVar();
     v0 = dl->VtxBuffer.Size;
-    if (files && !shortcut_asked()) {
+    if (files && (!shortcut_asked() || steam_card)) {
         shortcut_card(cw);
     } else if (L.shortcut_note[0]) {
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cw);
@@ -1418,7 +1470,6 @@ static void page_mods(float w, float h) {
 }
 
 // ---- the Tools page: the player's saves, the shortcuts, the updates (with Undo) and reporting a problem
-enum { JOB_BACKUP = 1, JOB_STEAM };
 
 // A heading over a group of the Tools page's rows, in a row of its own.
 static void tools_group(UiTextId title) {
@@ -1494,23 +1545,11 @@ static void page_tools(float w, float h) {
         tools_group(UI_TOOLS_SHORTCUTS);
         tools_row(menu_text(UI_LAUNCH_SHORTCUT), L.shortcut_note);
         if (ImGui::Button(menu_text(UI_LAUNCH_SHORTCUT_MAKE), ImVec2(0, act_h))) make_shortcut();
-        done = job.job == JOB_STEAM && job.phase == TOOL_DONE, failed = job.job == JOB_STEAM && job.phase == TOOL_FAILED;
-        int users = 0, running = 0;
-        if (done && sscanf(job.line, "%d %d", &users, &running) == 2)
-            snprintf(note, sizeof note, "%s", menu_text(running ? UI_TOOLS_STEAM_RESTART : UI_TOOLS_STEAM_DONE));
-        else if (failed)
-            snprintf(note, sizeof note, menu_text(UI_TOOLS_FAILED),
-                     !strncmp(job.line, "nosteam", 7) ? menu_text(UI_TOOLS_STEAM_NONE) : job.line);
-        else snprintf(note, sizeof note, "%s", menu_text(UI_TOOLS_STEAM_NOTE));
+        steam_note(job, note, sizeof note, &failed);
+        if (!note[0]) snprintf(note, sizeof note, "%s", menu_text(UI_TOOLS_STEAM_NOTE));
         tools_row(menu_text(UI_TOOLS_STEAM), note, failed);
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button(menu_text(UI_TOOLS_ADD), ImVec2(0, act_h))) {
-            char exe[PLAT_PATH_MAX * 2];
-            if (shortcut_target(exe, sizeof exe)) {
-                const char *args[] = {"add", "--name", "Mario Kart World", "--exe", exe, "--dir", L.exe_dir, nullptr};
-                tool_start(L.exe_dir, JOB_STEAM, "prepare/steam.py", args);
-            }
-        }
+        if (ImGui::Button(menu_text(UI_TOOLS_ADD), ImVec2(0, act_h))) steam_add();
         ImGui::EndDisabled();
 
         tools_group(UI_TOOLS_UPDATES);
