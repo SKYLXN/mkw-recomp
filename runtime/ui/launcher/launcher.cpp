@@ -90,6 +90,7 @@ static struct {
     char exe_dir[1024];
     Uint32 picked_event;            // dialogs can finish on another thread: consume their result on the UI thread
     int picking;
+    int steam_art;                  // Add to Steam pressed: the library images are drawn before the next frame
     int directory_restart;
     char source[1024];              // the player's copy: a folder, or a .nup file, from the dialogs
     int link_romfs;                 // 0 copy it into the game folder, 1 use it where it is
@@ -503,10 +504,104 @@ static bool shortcut_target(char *exe, size_t cap);
 
 // Add to Steam: tools/prepare/steam.py adds this program as a non-Steam game, with its library images, so Big Picture
 // and Gaming Mode (Bazzite, a Steam Deck) start it; the Tools page and the card below both run it.
-static void steam_add(void) {
-    char exe[PLAT_PATH_MAX * 2];
+// The images are drawn first (steam_art_draw, between two frames), then the job runs with them.
+static void steam_add(void) { L.steam_art = 1; }
+
+enum { ART_PORTRAIT, ART_WIDE, ART_HERO, ART_LOGO, ART_ICON };
+
+// The width of art_header's logo and title at logo m px and title t px.
+static float art_header_w(float m, float t) { return m * 1.28f + L.big->CalcTextSizeA(t, FLT_MAX, 0, "Mario Kart World").x; }
+
+// The port's logo and the title, as the main page's header, its top left at p: the logo m px, the title t px.
+static void art_header(ImDrawList *dl, ImVec2 p, float m, float t, bool sub) {
+    launcher_logo(dl, p, m);
+    float x = p.x + m + m * 0.28f, sh = t * 0.42f, gap = t * 0.08f, th = t + (sub ? gap + sh : 0);
+    float y = p.y + (m - th) * 0.5f;
+    dl->AddText(L.big, t, ImVec2(x, y), LOOK_TEXT, "Mario Kart World");
+    if (sub) dl->AddText(nullptr, sh, ImVec2(x + t * 0.03f, y + t + gap), LOOK_HEADING, menu_text(UI_LAUNCH_SUBTITLE));
+}
+
+// One of Steam's library images in the start screen's look: its backdrop (the waving chequered flag, or the player's
+// splash.png), the port's logo and the title; no art of the game. Drawn by ImGui into a render target and saved as
+// PNG, between two frames of the start screen.
+static bool art_one(int kind, int w, int h, const char *path) {
+    SDL_Texture *t = SDL_CreateTexture(L.ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, w, h);
+    if (!t) return false;
+    SDL_SetRenderTarget(L.ren, t);
+    SDL_SetRenderDrawColor(L.ren, 0, 0, 0, 0);
+    SDL_RenderClear(L.ren);
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui_ImplSDLRenderer3_NewFrame();
+    io.DisplaySize = ImVec2((float)w, (float)h);
+    io.DisplayFramebufferScale = ImVec2(1, 1);
+    ImGui::NewFrame();
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    float fw = (float)w, fh = (float)h;
+    ImU32 dark = IM_COL32(18, 21, 27, 230), none = IM_COL32(18, 21, 27, 0);
+    if (kind == ART_PORTRAIT || kind == ART_WIDE || kind == ART_HERO) backdrop_draw(dl, fw, fh, true);
+    if (kind == ART_PORTRAIT) {   // a box's front: the logo and the title centred low, over a dark band
+        dl->AddRectFilledMultiColor(ImVec2(0, fh * 0.45f), ImVec2(fw, fh), none, none, dark, dark);
+        float m = fw * 0.34f, t = fw * 0.105f;
+        launcher_logo(dl, ImVec2((fw - m) * 0.5f, fh * 0.50f), m);
+        ImVec2 ts = L.big->CalcTextSizeA(t, FLT_MAX, 0, "Mario Kart World");
+        dl->AddText(L.big, t, ImVec2((fw - ts.x) * 0.5f, fh * 0.50f + m + t * 0.35f), LOOK_TEXT, "Mario Kart World");
+        const char *sub = menu_text(UI_LAUNCH_SUBTITLE);
+        float st = t * 0.42f;
+        ImVec2 ss = ImGui::GetFont()->CalcTextSizeA(st, FLT_MAX, 0, sub);
+        dl->AddText(nullptr, st, ImVec2((fw - ss.x) * 0.5f, fh * 0.50f + m + t * 1.45f), LOOK_HEADING, sub);
+    } else if (kind == ART_WIDE) {   // the main page's header on the left, over a dark side
+        dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(fw * 0.7f, fh), dark, none, none, dark);
+        float m = fh * 0.30f;
+        art_header(dl, ImVec2(fw * 0.07f, (fh - m) * 0.5f), m, m * 0.62f, true);
+    } else if (kind == ART_LOGO) {   // over Steam's hero: the header alone, on nothing, as wide as fits
+        float m = fh * 0.8f, k = fminf(1.0f, fw * 0.96f / art_header_w(m, m * 0.62f));
+        m *= k;
+        art_header(dl, ImVec2((fw - art_header_w(m, m * 0.62f)) * 0.5f, (fh - m) * 0.5f), m, m * 0.62f, false);
+    } else if (kind == ART_ICON) {
+        launcher_logo(dl, ImVec2(0, 0), fw);
+    }
+    ImGui::Render();
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), L.ren);
+    SDL_Surface *px = SDL_RenderReadPixels(L.ren, nullptr);
+    if (px && (kind == ART_LOGO || kind == ART_ICON)) {   // on nothing: the edges blended with the clear black, undone
+        SDL_Surface *c = SDL_ConvertSurface(px, SDL_PIXELFORMAT_RGBA32);
+        SDL_DestroySurface(px);
+        px = c;
+        for (int y = 0; px && y < px->h; y++) {
+            uint8_t *r = (uint8_t *)px->pixels + (size_t)y * px->pitch;
+            for (int x = 0; x < px->w; x++, r += 4)
+                if (r[3] && r[3] < 255)
+                    for (int i = 0; i < 3; i++) r[i] = (uint8_t)(r[i] * 255 / r[3] > 255 ? 255 : r[i] * 255 / r[3]);
+        }
+    }
+    bool ok = px && SDL_SavePNG(px, path);
+    SDL_DestroySurface(px);
+    SDL_SetRenderTarget(L.ren, nullptr);
+    SDL_DestroyTexture(t);
+    return ok;
+}
+
+// Add to Steam's images into <game>/steam-art, then tools/prepare/steam.py with them (--art): Big Picture and Gaming
+// Mode show a console's library, and a grey tile or a bare flag looked like a tool there (17/11/2026). Called between
+// two frames of the start screen.
+static void steam_art_draw(void) {
+    L.steam_art = 0;
+    char dir[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 32], exe[PLAT_PATH_MAX * 2];
+    snprintf(dir, sizeof dir, "%s/steam-art", cfg_game_dir());
+    SDL_CreateDirectory(dir);
+    static const struct { int kind, w, h; const char *name; } kArt[] = {
+        {ART_PORTRAIT, 600, 900, "portrait.png"}, {ART_WIDE, 920, 430, "wide.png"}, {ART_HERO, 1920, 620, "hero.png"},
+        {ART_LOGO, 1280, 360, "logo.png"},        {ART_ICON, 256, 256, "icon.png"}};
+    int drawn = 0;
+    restyle(2.0f);   // fonts drawn at twice the 1080-line size: the titles are up to 200 px high, not stretched from 60
+    for (const auto &a : kArt) {
+        snprintf(path, sizeof path, "%s/%s", dir, a.name);
+        drawn += art_one(a.kind, a.w, a.h, path);
+    }   // the next frame's restyle puts the window's own scale back
+    rt_log("launcher: Steam's library images drawn: %d of 5 in %s", drawn, dir);
     if (!shortcut_target(exe, sizeof exe)) return;
-    const char *args[] = {"add", "--name", "Mario Kart World", "--exe", exe, "--dir", L.exe_dir, nullptr};
+    const char *args[] = {"add", "--name", "Mario Kart World", "--exe", exe, "--dir", L.exe_dir,
+                          drawn == 5 ? "--art" : nullptr, dir, nullptr};
     tool_start(L.exe_dir, JOB_STEAM, "prepare/steam.py", args);
 }
 
@@ -1776,6 +1871,7 @@ extern "C" int launcher_run(void) {
         int pw, ph;
         SDL_GetCurrentRenderOutputSize(L.ren, &pw, &ph);
         restyle(menu_look_scale((uint32_t)ph));
+        if (L.steam_art || (frame == 2 && getenv("MKW_LAUNCHER_STEAM_ART"))) steam_art_draw();   // (test) as Add to Steam
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         io.DisplaySize = ImVec2((float)pw, (float)ph);   // pixels: the style and fonts follow the height

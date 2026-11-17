@@ -101,3 +101,20 @@ def test_library_art_written_once_and_named_as_the_icon(tmp_path: Path) -> None:
     steam.add(p, NAME, EXE, "/games/mkw", str(icon))
     row = steam.read_map(p.read_bytes(), 0)[0]["shortcuts"]["0"]
     assert row["icon"] == str(icon)
+
+
+def test_art_from_the_start_screen_replaces_ours_only(tmp_path: Path) -> None:
+    """--art (launcher.cpp steam_art_draw): its files are used; a later run replaces what this script wrote, never an
+    image the player put there after."""
+    grid, art, appid = tmp_path / "grid", tmp_path / "art", 2675230854
+    art.mkdir()
+    for src in steam.ART.values():
+        (art / src).write_bytes(b"first " + src.encode())
+    steam.write_art(grid, appid, art)
+    assert (grid / f"{appid}p.png").read_bytes() == b"first portrait.png"
+    (grid / f"{appid}_hero.png").write_bytes(b"the player's own")
+    for src in steam.ART.values():
+        (art / src).write_bytes(b"second " + src.encode())
+    steam.write_art(grid, appid, art)
+    assert (grid / f"{appid}p.png").read_bytes() == b"second portrait.png"
+    assert (grid / f"{appid}_hero.png").read_bytes() == b"the player's own"
