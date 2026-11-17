@@ -1,9 +1,10 @@
-// --probe-dsu: the Cemuhook / DSU motion client (input/dsu.c) without the game or a controller. By default it is its own
-// DSU server on the loopback: it waits for the client's pad data request, checks its header and CRC, then sends slot 0
-// a controller lying flat and turning right at 90 deg/s, 250 samples a second, and checks that the client hands the
-// sample over in the Switch frame (acceleration z = -1 G, rate z = -pi/2 rad/s), that the fusion then reads a quarter
-// turn a second, that a packet with a bad CRC is ignored and that MKW_DSU=0 stops it. With MKW_DSU_SERVER set it asks
-// that server instead (a real one: DS4Windows, BetterJoy...) and prints what slot MKW_DSU_SLOT sends for 5 s.
+// --probe-dsu: the Cemuhook / DSU motion client (input/dsu.c) without the game or a controller. By default it is its
+// own DSU server on the loopback: it waits for the client's pad data request, checks its header and CRC, then sends
+// slot 0 a controller lying flat and turning right at 90 deg/s, 250 samples a second, and checks that the client hands
+// the sample over in the Switch frame (acceleration z = -1 G, rate z = -pi/2 rad/s), that the fusion then reads a
+// quarter turn a second, that a packet with a bad CRC is ignored, that the samples come back when the server quits and
+// starts again, and that MKW_DSU=0 stops it. With MKW_DSU_SERVER set it asks that server instead (a real one:
+// DS4Windows, BetterJoy...) and prints what slot MKW_DSU_SLOT sends for 5 s.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -101,7 +102,8 @@ int probe_dsu(void) {
     // The conversion alone: flat and turning right in DSU axes is z down and a clockwise turn about z for the Switch.
     const float flat[3] = {0, -1, 0}, yaw_right[3] = {0, 90, 0}, pitch_up[3] = {45, 0, 0}, roll_right[3] = {0, 0, 30};
     dsu_axes(flat, yaw_right, acc, gyro);
-    CHECK(close_to(acc[0], 0) && close_to(acc[1], 0) && close_to(acc[2], -1) && close_to(gyro[2], -M_PI / 2) && close_to(gyro[0], 0),
+    CHECK(close_to(acc[0], 0) && close_to(acc[1], 0) && close_to(acc[2], -1) && close_to(gyro[2], -M_PI / 2) &&
+              close_to(gyro[0], 0),
           "axes: flat -> acc (%.2f %.2f %.2f) G, yaw right 90 deg/s -> rate z %.3f rad/s", acc[0], acc[1], acc[2],
           gyro[2]);
     dsu_axes(flat, pitch_up, acc, gyro);
@@ -155,16 +157,35 @@ int probe_dsu(void) {
     }
     MotionState st;
     int n = motion_read(m, &st, 1, now);
-    CHECK(fed == 250 && n == 1 && close_to(st.gyro[2], -0.25) && fabs(st.angle[2] + 0.25) < 0.01 && close_to(st.acc[2], -1),
+    CHECK(fed == 250 && n == 1 && close_to(st.gyro[2], -0.25) && fabs(st.angle[2] + 0.25) < 0.01 &&
+              close_to(st.acc[2], -1),
           "fusion: %d samples fed, rate z %.3f rev/s, angle z %.3f rev after 1 s, acc z %.2f G", fed, st.gyro[2],
           st.angle[2], st.acc[2]);
 
     CHECK(sv.bad_crc_sent && !dsu_motion(1, acc, gyro), "slot 1's packets with a bad CRC are ignored");
 
+    // The server quits (the client's requests then meet a closed port: "port unreachable") and starts again on the
+    // same port, as a player closing and reopening DS4Windows does: the samples stop, then come back on their own.
+    sv.stop = 1;
+    plat_sleep_ms(50);
+    host_close(sv.s);
+    plat_sleep_ms(1500);
+    CHECK(!dsu_motion(0, acc, gyro), "server gone: no sample");
+    static Server again;
+    again.s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (again.s == HOST_BAD || bind(again.s, (struct sockaddr *)&a, sizeof a) ||
+        !plat_thread_spawn(server_main, &again, "dsu-server", 0)) {
+        CHECK(0, "cannot start the fake server again on %s", server);
+        return 1;
+    }
+    t0 = plat_now_ms();
+    while (!(got = dsu_motion(0, acc, gyro)) && plat_now_ms() - t0 < 3000) plat_sleep_ms(10);
+    CHECK(got, "server back on the same port: samples again after %llu ms", (unsigned long long)(plat_now_ms() - t0));
+
     cfg_set("MKW_DSU", "0");
     plat_sleep_ms(600);
     CHECK(!dsu_motion(0, acc, gyro), "MKW_DSU=0 (live): no sample");
-    sv.stop = 1;
+    again.stop = 1;
     plat_sleep_ms(50);
     printf("dsu: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;

@@ -30,6 +30,7 @@ typedef SOCKET HostSock;
 #define host_close closesocket
 #define host_poll WSAPoll
 #else
+#include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -181,7 +182,8 @@ static void receive(const uint8_t *p, int n) {
 }
 
 // MKW_DSU_SERVER to an address: "host:port", "host" (port 26760), "[v6]:port" or a bare IPv6 address; 0 when it does
-// not resolve.
+// not resolve. IPv4 first when a name has both: DSU servers listen on 127.0.0.1, and "localhost" can resolve to ::1
+// first.
 static int resolve(const char *server, struct sockaddr_storage *out, int *len) {
     char host[128], port[16] = "26760";
     snprintf(host, sizeof host, "%s", server);
@@ -197,8 +199,14 @@ static int resolve(const char *server, struct sockaddr_storage *out, int *len) {
     }
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_DGRAM}, *res = NULL;
     if (getaddrinfo(host, port, &hints, &res) || !res) return 0;
-    memcpy(out, res->ai_addr, res->ai_addrlen);
-    *len = (int)res->ai_addrlen;
+    const struct addrinfo *pick = res;
+    for (const struct addrinfo *r = res; r; r = r->ai_next)
+        if (r->ai_family == AF_INET) {
+            pick = r;
+            break;
+        }
+    memcpy(out, pick->ai_addr, pick->ai_addrlen);
+    *len = (int)pick->ai_addrlen;
     freeaddrinfo(res);
     return 1;
 }
@@ -217,7 +225,16 @@ static HostSock open_socket(const char *server) {
     DWORD got = 0;
     WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof off, NULL, 0, &got, NULL, NULL);
 #endif
-    if (connect(s, (struct sockaddr *)&addr, len)) {   // only the server's datagrams arrive
+    // Non-blocking, so draining after a poll never waits; on Linux it also reads (and clears) the error a "port
+    // unreachable" leaves on the socket while no server listens, which would otherwise make every poll return at once
+    // with POLLERR and the thread spin.
+#ifdef _WIN32
+    u_long nb = 1;
+    int nb_ok = !ioctlsocket(s, FIONBIO, &nb);
+#else
+    int fl = fcntl(s, F_GETFL, 0), nb_ok = fl >= 0 && !fcntl(s, F_SETFL, fl | O_NONBLOCK);
+#endif
+    if (!nb_ok || connect(s, (struct sockaddr *)&addr, len)) {   // connected: only the server's datagrams arrive
         host_close(s);
         return HOST_BAD;
     }
@@ -278,13 +295,13 @@ static void dsu_main(void *arg) {
             next_request = now + 1000000000ull;
         }
         struct pollfd pfd = {.fd = s, .events = POLLIN};
-        if (host_poll(&pfd, 1, 100) <= 0 || !(pfd.revents & POLLIN)) continue;
-        for (;;) {   // drain: each slot keeps only its newest sample
+        if (host_poll(&pfd, 1, 100) <= 0) continue;
+        // Drain on any event (POLLERR included): each slot keeps only its newest sample. An error (no server yet, a
+        // truncated datagram) ends the drain; the next request a second later tries again.
+        for (int i = 0; i < 256; i++) {
             int n = (int)recv(s, (char *)buf, sizeof buf, 0);
             if (n <= 0) break;
             receive(buf, n);
-            pfd.revents = 0;
-            if (host_poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN)) break;
         }
     }
 }
