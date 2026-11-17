@@ -187,7 +187,10 @@ int kern_svc(Cpu *c, uint32_t imm) {
         RtThread *t = h_get((uint32_t)x[2], O_THREAD);
         x[0] = t ? R_OK : R_BAD_HANDLE;
         if (t) {
-            x[1] = (uint64_t)(uint32_t)t->core;
+            // The guest-visible ideal core must be inside the mask. If the scheduler hint (t->core) is
+            // outside, report -1 (don't care) so a copied (core, mask) pair is never inconsistent.
+            int32_t visible_core = (t->mask && (t->core >= 0) && !(t->mask >> t->core & 1)) ? -1 : t->core;
+            x[1] = (uint64_t)(uint32_t)visible_core;
             x[2] = t->mask;
         }
         unlock();
