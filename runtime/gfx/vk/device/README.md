@@ -7,6 +7,7 @@ submits and fences, present.
 |---|---|
 | `vk.h`, `vk_backend.c` | Internal header and back end: ties memory, textures, submits and present together |
 | `vk_device.c`, `vk_caps.c`, `vk_vma.cpp` | Instance, device, VMA (the only C++), and what the runtime decides from the GPU |
+| `vk_pstate.c` | An AMD GPU's clocks on Linux (`MKW_GPU_CLOCKS`, default peak on a discrete GPU): amdgpu's automatic choice left the race frame's half-busy GPU at its lowest clock (500 of 2855 MHz on an RX 6700 XT, races at 42.6 ms a frame); a stable pstate set on a context of our own through `libdrm_amdgpu` (loaded at run time, no root) holds them for the run (16.9 ms). `ab` switches it with the A/B blocks |
 | `vk_defaults.h`, `vk_defaults.c` | Memory caps with nothing set, from the player's GPU and RAM (`MKW_SPARSE_MIB`, `MKW_GPU_MEM_LIMIT` on an integrated GPU, `MKW_VK_TEX_POOL_MIN`); pure, checked by `tests/test_defaults.py` |
 | `vk_destroy_count.h` | Routes every buffer, view or sampler destruction through `vk_destroy_note`: the draw cache is flushed when a stored set named that handle |
 | `vk_rec.h`, `vk_rec.c`, `vk_rec_cmds.c`, `vk_rec_int.h` | Recorder thread: the replay's `vkCmd*` calls are made by another thread in the same order; `vk_rec.c` holds the ring, the thread and the fixed-size commands, `vk_rec_cmds.c` the ones with arrays and the extension ones, and the internal header what they share |

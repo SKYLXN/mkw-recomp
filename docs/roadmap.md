@@ -23,6 +23,10 @@ with the game (−2.4 ms), submits on their own thread (−1.2 to −1.6 ms), th
 (−0.8 ms), the replay thread on its own core (−1.1 ms), dynamic state recorded only when it changes (idea from
 totk-pc-recomp, MIT; −10.6 % recorder instructions on Steam Deck; no measurable frame-time change). Next:
 
+- **AMD GPU clocks on Linux** (done, `MKW_GPU_CLOCKS`): amdgpu judges a GPU's clock by how busy it is, and this
+  chain keeps it half idle, so it stayed at its lowest clock (500 of 2855 MHz on an RX 6700 XT, 2560x1440: races at
+  23-42 ms a frame). Held at the peak stable pstate: 16.7-17.2 ms, -15.1 ms a frame (medians, in-run A/B and its
+  inverted twin, 17/11/2026). Integrated GPUs (Steam Deck, the 660M) are left to amdgpu until measured: `ab` measures it.
 - **Less work per draw**: descriptor sets kept across frames by their contents (`MKW_DRAW_CACHE`).
 - **Recording in parallel**: chunks of a submit on several threads; today they fight over the texture lock, which has
   to be split first.

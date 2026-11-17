@@ -112,6 +112,8 @@ int vk_lat_on(void);
 uint64_t vk_lat_next_id(void);                                   // the next host present's id, 0 without present wait
 void vk_lat_flip(uint64_t slot, int first, int game, uint64_t id);   // a host present of the frame shown at slot
 void vk_lat_swapchain(int begin, VkSwapchainKHR sc);             // around vkCreateSwapchainKHR (it retires the old)
+void vk_pstate_init(VkPhysicalDevice phys);   // vk_pstate.c: an AMD GPU's clocks held (MKW_GPU_CLOCKS), after the device
+void vk_pstate_frame(void);                   // each present: MKW_GPU_CLOCKS=ab switches with the A/B blocks
 void vk_lat_device(VkDevice device, int has_present_wait);                        // after the device: starts the present wait thread
 // vk_present_blit for frame generation: presents already waiting stay waiting, so the frames of one game frame are
 // all blitted at once and each vk_present_flip then queues the next at its time.
