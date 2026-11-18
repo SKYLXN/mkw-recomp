@@ -2,7 +2,8 @@
 
 Mod import and merging for the start screen's Mods page (`runtime/ui/launcher/mods.cpp` runs these
 tools the way `launcher_setup.cpp` runs `tools/prepare/prepare.py`: the package's Python, one event
-per line).
+per line). The importer emits UTF-8 on its stdout/stderr pipes on every platform, so Unicode names and paths
+reach the launcher intact.
 
 | File | What it is |
 |---|---|

@@ -1,10 +1,12 @@
-"""The compile step of prepare.py: the generated C into mkwgame.so / mkwgame.dll with the package's zig (or clang).
+"""The compile step of prepare.py: the generated C into mkwgame.so / mkwgame.dll with the package's zig (or clang), its
+chunks on LLVM's own clang when the package has it (fastcc.py).
 
 Why apart: prepare.py holds the order of the steps and their keys; this step is the largest and has its own reuse of
 earlier objects. Not run on its own.
 """
 
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +19,7 @@ sys.path.insert(0, str(ROOT / "tools/build"))
 import build  # (GEN_FLAGS, gen_modules, module_glue, game_id: the same game code as build.py --dist)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fastcc
 from machine import Failed, crt_link, emit, package_dir
 
 # The compiler's messages as text: zig writes UTF-8 (paths with "Área de Trabalho" in it), which the locale's code page
@@ -48,6 +51,16 @@ def write_link_response(rsp: Path, objects: list[Path], windows_quoting: bool) -
     rsp.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def cpu_level() -> str:
+    """The x86-64 level the game code is built for: v3 (AVX2, FMA, BMI2: build.py ARCH_FLAGS) or, with MKW_SETUP_CPU=v2,
+    x86-64-v2 (SSE4.2), for CPUs without AVX2 (an AMD FX, an Intel Core before Haswell). Each level has its own object
+    keys (the flags are in them)."""
+    level = os.environ.get("MKW_SETUP_CPU", "v3")
+    if level not in ("v2", "v3"):
+        sys.exit(f"MKW_SETUP_CPU={level}: v2 or v3")
+    return level
+
+
 def compile_game(
     game: Path, exefs: Path, work: Path, cc: list[str], target: str, jobs: int, dest: Path | None = None
 ) -> None:
@@ -56,13 +69,16 @@ def compile_game(
     gen, obj = work / "generated", work / "obj"
     windows = target == "windows"
     flags = [*build.GEN_FLAGS, *([] if windows else ["-fPIC"])]
+    v2 = cpu_level() == "v2"
+    if v2:
+        flags = [f.replace("-march=x86-64-v3", "-march=x86-64-v2") for f in flags]
     if Path(cc[0]).stem == "zig":
         # zig cc turns -O1 into -O2 with both vectorizers, keeps frame pointers, adds debug info and UBSan, and spells
         # the CPU its own way: 182 126 instructions on a chunk clang -O1 makes in 150 969. With these, 150 745 (the
         # rest is LLVM 22 against 23), as SavageWindRecomp's GAMELIB_ZIGFLAGS (runtime/gamebuild.c, MIT).
         # AArch64: zig ignores -ffixed-x18 without a word (mkwgame.so used x18 73 079 times and crashed at the first
         # preemption, Odin 2, 10/11/2026); its CPU feature reserve_x18 keeps the register out.
-        flags = [f.replace("-march=x86-64-v3", "-mcpu=x86_64_v3")
+        flags = [f.replace("-march=x86-64-v3", "-mcpu=x86_64_v3").replace("-march=x86-64-v2", "-mcpu=x86_64_v2")
                  .replace("-march=armv8.2-a+fp16+rcpc+dotprod+crc",
                           "-mcpu=generic+v8_2a+fullfp16+rcpc+dotprod+crc+reserve_x18")
                  for f in flags if f != "-ffixed-x18"]  # fmt: skip
@@ -77,7 +93,10 @@ def compile_game(
     inc = [f"-I{d}" for d in sorted({p.parent for p in (ROOT / "runtime").rglob("*.h")})] + [f"-I{gen}"]
     cpu = ROOT / "runtime/cpu"
     jobs_c = [(src, obj / f"{src.parent.name}_{src.stem}.o", [*flags, f"-I{cpu}"]) for src in srcs]
+    if v2:  # the FMADDs and the RECPS/RSQRTS steps become fma/fmaf calls: correctly rounded ones, not the C runtime's
+        jobs_c.append((cpu / "fma.c", obj / "cpu_fma.o", [*flags, f"-I{cpu}"]))
     jobs_c.append((obj / "modules.c", obj / "modules.o", [*flags, gid, *inc]))
+    cc1 = fastcc.setup(cc, package_dir(game), obj, [jobs_c[0][2], jobs_c[-1][2]])
     jobs_c.sort(key=lambda j: -j[0].stat().st_size)  # the largest first: no 10 MB main_table.c alone at the end
     total, done = len(jobs_c) + 1, 0  # the link is the last unit: a progress bar full before it hid it (issue #2)
     extra = [str(package_dir(game) / "lib/libmkw.dll.a")] if windows else ["-Wl,-z,noexecstack"]
@@ -110,7 +129,7 @@ def compile_game(
             return ""
         compiled.append(src)  # list.append is atomic across the pool's threads
         stamp.unlink(missing_ok=True)
-        return compile_one(cc, f, src, out, stamp, key)
+        return compile_one(cc, f, src, out, stamp, key, cc1.cmd(f, src, out) if cc1 else None)
 
     lib = dest / ("mkwgame.dll" if windows else "mkwgame.so")
     part = lib.with_name(lib.name + ".part")
@@ -147,9 +166,12 @@ def compile_game(
     (dest / "mkwgame.id").write_text(build.game_id())  # runtime/core/boot/gamelib.c rt_game_present
 
 
-def compile_one(cc: list[str], flags: list[str], src: Path, out: Path, stamp: Path, key: str) -> str:
-    """One object: "" when built, else the error for the player; a damaged source raises DamagedSource instead."""
-    cmd = [*cc, "-std=gnu11", *flags, "-c", str(src), "-o", str(out)]
+def compile_one(
+    cc: list[str], flags: list[str], src: Path, out: Path, stamp: Path, key: str, cmd: list[str] | None = None
+) -> str:
+    """One object: "" when built, else the error for the player; a damaged source raises DamagedSource instead.
+    cmd: the command instead of cc's (fastcc.py's -cc1 line)."""
+    cmd = cmd or [*cc, "-std=gnu11", *flags, "-c", str(src), "-o", str(out)]
     r = subprocess.run(cmd, capture_output=True, **UTF8, check=False)
     if r.returncode and crashed(r.stderr):
         # A compiler crash (ICE) on a chunk that compiles everywhere else is the machine, not the source (#506: a

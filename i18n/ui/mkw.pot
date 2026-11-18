@@ -766,6 +766,30 @@ msgctxt "UI_MENU_ICONS_IN_USE"
 msgid "in use: %s"
 msgstr ""
 
+msgctxt "UI_MENU_MENU_SHORTCUT"
+msgid "Menu shortcut"
+msgstr ""
+
+msgctxt "UI_MENU_MENU_SHORTCUT_DESC"
+msgid ""
+"Choose which controller input opens this menu (Start + Select or the Guide button). Keyboard "
+"defaults to F1 or Esc."
+msgstr ""
+
+msgctxt "UI_MENU_SHORTCUT_MINUS_PLUS"
+msgid "Start + Select"
+msgstr ""
+
+msgctxt "UI_MENU_SHORTCUT_GUIDE"
+msgid "Guide button"
+msgstr ""
+
+msgctxt "UI_MENU_SHORTCUT_STEAM_NOTE"
+msgid ""
+"Note: If using the Guide button, we recommend disabling 'Guide button focuses Steam' in Steam "
+"(Settings -> Controller -> Advanced Settings) so Steam doesn't open over the game."
+msgstr ""
+
 msgctxt "UI_BINDS_HELP"
 msgid ""
 "Select a cell and press A or Enter, then the key, mouse button or controller button. Delete or X "
@@ -836,7 +860,7 @@ msgid "Player %d: %s"
 msgstr ""
 
 msgctxt "UI_MENU_PAD_BATTERY_DESC"
-msgid "The battery of each player's controller, as the controller reports it. Some controllers report none. A Switch 2 controller over Bluetooth reports a voltage, shown as high, medium or low."
+msgid "The battery of each player's controller, as the controller reports it. Some controllers report none. A Switch 2 controller over Bluetooth reports a voltage and an Xbox controller on Linux's xone driver a level, each shown as high, medium or low."
 msgstr ""
 
 msgctxt "UI_MENU_PADS_NONE"

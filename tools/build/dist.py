@@ -10,6 +10,7 @@ mismatch stops.
 Layout of build/dist/<target>/ (after build.py --dist):
     mkw, mkwgame.id                 the runtime (mkw.exe and its DLLs on Windows; mkwgame.* comes from the setup)
     setup/python, setup/zig, setup/glslc
+    setup/clang/                    (Linux x86-64, Windows) LLVM's own clang of zig's version: llvm_clang.py
     setup/src/                      recomp/, sm86/, tools/{build,prepare,romfs,shaders}, runtime/{cpu,core/boot/gamelib.h}
     setup/src/FILES                 the list of those files: the only ones prepare.py's keys count
     setup/lib/libmkw.dll.a          (Windows) the runtime's import library the game code library links against
@@ -34,6 +35,8 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import llvm_clang
 
 ROOT = Path(__file__).resolve().parents[2]
 DL = ROOT / "build/dist/dl"
@@ -261,6 +264,11 @@ def main() -> None:
     for wheel in ("numpy", "lz4"):
         unpack_wheel(got[wheel], site)
     unpack_top(got["zig"], setup / "zig")
+    if args.target in llvm_clang.PINS:
+        # the game code's chunks ~30 % faster than on zig's LLVM (tools/prepare/fastcc.py)
+        (setup / "clang").mkdir(exist_ok=True)
+        cl = llvm_clang.clang(args.target)
+        shutil.copy2(cl, setup / "clang" / cl.name)
     glslc = setup / "glslc"
     shutil.rmtree(glslc, ignore_errors=True)
     for name in ("shaderc", "glslang", "spirv-tools", "libstdcxx", "libgcc", "vc14_runtime"):

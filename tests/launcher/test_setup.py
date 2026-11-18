@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -449,6 +450,87 @@ def test_copy_removes_other_versions_files(tmp_path: Path) -> None:
                                                                              "UI/Product_180.sarc.zs"]  # fmt: skip
     gamecopy.clear_dir(dst, dst / "Sub Dir/b")  # the source inside: kept
     assert (dst / "UI/Product_180.sarc.zs").is_file()
+
+
+@pytest.fixture
+def loose_romfs_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Callable[[str], None]]:
+    game = tmp_path / "PC installation"
+    game.mkdir()
+    for version, data in (("1.0.0", b"old!"), ("1.8.0", b"new!")):
+        src = tmp_path / version
+        (src / "exefs").mkdir(parents=True)
+        (src / "exefs/main").write_bytes(b"synthetic header")
+        (src / "romfs").mkdir()
+        for name in ("shared.bin", "second.bin", version):
+            (src / "romfs" / name).write_bytes(data)
+
+    monkeypatch.setattr(prepare, "STEPS", ("check", "exefs", "romfs"))
+    monkeypatch.setattr(prepare, "own_children", lambda: None)
+    monkeypatch.setattr(prepare.update, "ca_file", lambda: None)
+    monkeypatch.setattr(prepare.build, "game_id", lambda: "synthetic")
+    # setup.lock is held until the process ends; here every run shares this process, and a run that exits early leaves
+    # its open lock file in the SystemExit traceback pytest.raises keeps, so the next run would wait for it forever
+    monkeypatch.setattr(prepare, "hold_lock", lambda _game: None)
+
+    def check(src: Path, *_: Path) -> tuple[Path, Path, SimpleNamespace]:
+        return src / "exefs", src / "romfs", SimpleNamespace(name=src.name, romfs_files=3)
+
+    monkeypatch.setattr(prepare, "check", check)
+
+    def run(version: str) -> None:
+        log = game / "logs/setup.log"
+        log.parent.mkdir(exist_ok=True)
+        with log.open("w", encoding="utf-8") as log_stream, monkeypatch.context() as patch:
+            patch.setattr(sys, "stderr", log_stream)
+            patch.setattr(sys, "argv", ["prepare.py", "--source", str(tmp_path / version), "--game", str(game),
+                                        "--romfs", "copy", "--jobs", "1"])
+            prepare.main()
+
+    return game / "romfs", run
+
+
+def test_loose_romfs_replaces_same_size_files_when_switching_versions(loose_romfs_setup) -> None:
+    romfs, run = loose_romfs_setup
+    run("1.0.0")
+    run("1.8.0")
+
+    assert (romfs / "shared.bin").read_bytes() == b"new!"
+    assert not (romfs / "1.0.0").exists()
+    assert (romfs / "1.8.0").exists()
+
+
+@pytest.mark.parametrize("recovery", ["first-copy", "retry-switch", "return-to-old"])
+def test_interrupted_loose_romfs_copy(loose_romfs_setup, monkeypatch: pytest.MonkeyPatch, recovery: str) -> None:
+    romfs, run = loose_romfs_setup
+    if recovery != "first-copy":
+        run("1.0.0")
+    copyfile = shutil.copyfile
+
+    def interrupt(source: Path, target: Path) -> Path:
+        if source.name == "second.bin":
+            raise OSError("simulated interrupted copy")
+        return copyfile(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "copyfile", interrupt)
+        with pytest.raises(SystemExit) as failed:
+            run("1.8.0")
+        assert failed.value.code == 1
+
+    shared = romfs / "shared.bin"
+    assert shared.read_bytes() == b"new!"
+    os.utime(shared, (1_700_000_000, 1_700_000_000))
+    timestamp = shared.stat().st_mtime_ns
+    if recovery == "return-to-old":
+        run("1.0.0")
+        assert shared.read_bytes() == (romfs / "second.bin").read_bytes() == b"old!"
+        assert not (romfs / "1.8.0").exists()
+    else:
+        run("1.8.0")
+        assert (romfs / "second.bin").read_bytes() == b"new!"
+        assert shared.stat().st_mtime_ns == timestamp
 
 
 def test_package_has_the_launchers_tools() -> None:

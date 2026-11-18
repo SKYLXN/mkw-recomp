@@ -94,3 +94,15 @@ def test_installed_dir_forms_take_zigs_forward_slashes_on_windows() -> None:
     object's key, and the first update compiled all ~360 chunks again (18/11/2026)."""
     forms = gamecode.installed_dirs(PureWindowsPath(r"C:\upd\base\setup\zig"))
     assert forms == {r"C:\upd\base\setup\zig", "C:/upd/base/setup/zig"}
+
+
+def test_cpu_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MKW_SETUP_CPU picks the x86-64 level (CPUs without AVX2, discussion #82): v3 by default, v2 on request, and
+    anything else stops the setup instead of building for a CPU nobody asked for."""
+    monkeypatch.delenv("MKW_SETUP_CPU", raising=False)
+    assert gamecode.cpu_level() == "v3"
+    monkeypatch.setenv("MKW_SETUP_CPU", "v2")
+    assert gamecode.cpu_level() == "v2"
+    monkeypatch.setenv("MKW_SETUP_CPU", "v4")
+    with pytest.raises(SystemExit):
+        gamecode.cpu_level()
