@@ -297,9 +297,12 @@ static int astc_opaque(const uint8_t *p, uint64_t size) {
 // astc_opaque takes as alpha because of their colour endpoint mode may still hold alpha 1 everywhere (728 of 768 ASTC
 // images of the race stayed BC7 for their modes, bc1r; 552 of them decode to alpha 1, bca1). Decoding every texel took
 // 5.4 s of the load on the replay thread (bca2). Storage is block-linear, but every 16 bytes is still one block.
-static int astc_alpha_one(const uint8_t *p, uint64_t size, int bw, int bh) {
+// That test for blocks [at, end) of the storage: -1 when one has alpha below 255 (or *stop is set: another range found one), else 1
+// when any block was not padding, 0 otherwise.
+static int alpha_one_range(const uint8_t *p, uint64_t at, uint64_t end, int bw, int bh, volatile int32_t *stop) {
     int any = 0;
-    for (uint64_t at = 0; at + 16 <= size; at += 16) {
+    for (uint32_t i = 0; at + 16 <= end; at += 16, i++) {
+        if (!(i & 255) && __atomic_load_n(stop, __ATOMIC_RELAXED)) return -1;
         uint64_t lo, hi;
         memcpy(&lo, p + at, 8), memcpy(&hi, p + at + 8, 8);
         if (!lo && !hi) continue;   // layout padding; only zeros: not loaded yet, not opaque
@@ -311,9 +314,42 @@ static int astc_alpha_one(const uint8_t *p, uint64_t size, int bw, int bh) {
             else if (((lo >> 23) & 3) == 0) cem = (unsigned)((lo >> 25) & 15);
             if (cem < 16 && !(ASTC_ALPHA_CEM >> cem & 1)) continue;
         }
-        if (!astc_block_alpha_one(p + at, (uint32_t)bw, (uint32_t)bh)) return 0;
+        if (!astc_block_alpha_one(p + at, (uint32_t)bw, (uint32_t)bh)) return -1;
     }
     return any;
+}
+
+// The storage in ALPHA_CHUNK pieces over the texture workers (tex_par.c): the scan was ~66 ms of the course load's 1.5
+// s peak on the replay thread (tl-fp1, 16/11/2026). The answer is the serial one: alpha 1 when no piece finds a block
+// below it, any block not padding counted over all of them. Replays of four captures (MKW_TEX_PAR=0 against 1,
+// 17/11/2026, the same BC1 count and images): 21 -> 8-9 ms (gp397), 19 -> 9 (tt8), 16 -> 8 (title), 11 -> 6 (photo).
+// Pieces of 64 KiB and at least 4 of them left most images on the caller (gp397 21 -> 9-11 ms): at 8x8 blocks a
+// 1024x1024 image is 256 KiB.
+#define ALPHA_CHUNK (16u << 10)
+typedef struct {
+    const uint8_t *p;
+    uint64_t size;
+    int bw, bh;
+    volatile int32_t stop, any;
+} AlphaJob;
+
+static void alpha_one_item(void *ctx, uint32_t i) {
+    AlphaJob *J = ctx;
+    uint64_t at = (uint64_t)i * ALPHA_CHUNK, end = at + ALPHA_CHUNK < J->size ? at + ALPHA_CHUNK : J->size;
+    int r = alpha_one_range(J->p, at, end, J->bw, J->bh, &J->stop);
+    if (r < 0) __atomic_store_n(&J->stop, 1, __ATOMIC_RELAXED);
+    else if (r) __atomic_store_n(&J->any, 1, __ATOMIC_RELAXED);
+}
+
+static int astc_alpha_one(const uint8_t *p, uint64_t size, int bw, int bh) {
+    AlphaJob J = {p, size & ~15ull, bw, bh, 0, 0};
+    uint64_t n = (J.size + ALPHA_CHUNK - 1) / ALPHA_CHUNK;
+    if (n < 2 || n > UINT32_MAX) {
+        int r = alpha_one_range(p, 0, J.size, bw, bh, &J.stop);
+        return r > 0;
+    }
+    tex_par_for((uint32_t)n, alpha_one_item, &J);
+    return !J.stop && J.any;
 }
 
 // Texture memory made before play (MKW_VK_TEX_POOL_MIN=<blocks>, default half the VRAM up to 8, 0 off; by default on

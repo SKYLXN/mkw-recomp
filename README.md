@@ -193,7 +193,7 @@ Linux, with `uv`, `clang`, `lld`, `ninja`, SDL3, Opus, libvpx, zstd, xxHash, the
 `MKW_GAME=<dir>`, then from the repo root:
 
 ```sh
-uv run python recomp/gen.py --exefs game/exefs --out build/generated --jobs 8 --patches recomp/patches-mkw.txt  # 1.8.0: patches-mkw-180.txt
+uv run python recomp/gen.py --exefs game/exefs --jobs 8  # --out/--patches default to the dump's version (1.8.0: build/generated-180)
 uv run tools/shaders/extract.py && uv run tools/shaders/translate.py
 uv run tools/build/build.py              # build/mkw; --target windows builds mkw.exe with llvm-mingw (windeps.py)
 build/mkw

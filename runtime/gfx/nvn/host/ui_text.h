@@ -83,6 +83,8 @@ typedef enum {
     UI_MENU_DSU, UI_MENU_DSU_DESC,   // Cemuhook / DSU motion (input/dsu.c)
     UI_MENU_BUTTON_ICONS, UI_MENU_BUTTON_ICONS_DESC, UI_MENU_ICONS_NINTENDO, UI_MENU_ICONS_XBOX,
     UI_MENU_ICONS_PLAYSTATION, UI_MENU_ICONS_KEYBOARD, UI_MENU_ICONS_IN_USE,   // "in use: %s"
+    UI_MENU_MENU_SHORTCUT, UI_MENU_MENU_SHORTCUT_DESC, UI_MENU_SHORTCUT_MINUS_PLUS, UI_MENU_SHORTCUT_GUIDE,
+    UI_MENU_SHORTCUT_STEAM_NOTE,
 
     // Controls tab: the remapping rows (ui/menu/binds_page.cpp)
     UI_BINDS_HELP, UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD,
@@ -97,7 +99,7 @@ typedef enum {
     UI_MENU_PADS,             // group heading over the players' rows
     UI_MENU_PAD_PLAYER,       // "Player %d: %s": the player and the controller's name
     UI_MENU_PAD_BATTERY_DESC, UI_MENU_PADS_NONE,
-    UI_POWER_LOW, UI_POWER_MEDIUM, UI_POWER_HIGH,   // a Switch 2 controller's band over Bluetooth
+    UI_POWER_LOW, UI_POWER_MEDIUM, UI_POWER_HIGH,   // a coarse band: a Switch 2 controller's voltage over Bluetooth, an Xbox pad's sysfs level on xone
     UI_POWER_CHARGING, UI_POWER_CHARGED, UI_POWER_WIRED, UI_POWER_UNKNOWN,
     UI_NOTICE_BATTERY_LOW,    // "Player %d's controller is running out of battery (%s)"
     UI_BINDS_RESET, UI_BINDS_RESET_DESC,

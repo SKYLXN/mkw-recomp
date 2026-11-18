@@ -143,6 +143,7 @@ void vk_fg_release(void);   // before the device goes away
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void vk_sync_parts_flush(void);   // queue lock held: the parts waiting for the submit thread to the queue (vk_sync.c)
+struct PlatThread *vk_sync_submit_thread(void);   // the thread "vk submit" once started, else NULL (vk_sync.c)
 // Copy of the last presented swapchain image, for probes: on, the next presents read the image back into a host buffer
 // and wait for the GPU. *px stays valid until the next present; the format is the swapchain's. Returns 0 with no frame.
 // The rectangle {x, y, w, h} of a dw x dh swapchain image a cw x ch picture is presented in (gfx_present.c,

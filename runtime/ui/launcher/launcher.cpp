@@ -202,7 +202,7 @@ static bool pad_power(int i, InputPower *w, char *text, int size) {
     snprintf(w->name, sizeof w->name, "%s", n ? n : "");
     int pct = -1;
     SDL_PowerState st = SDL_GetGamepadPowerInfo(g, &pct);
-    input_power_from_sdl(st, pct, SDL_GetGamepadID(g), w);
+    input_power_from_sdl(st, pct, SDL_GetGamepadID(g), i, w);
     input_power_text(w, text, size);
     return true;
 }
@@ -387,7 +387,8 @@ static bool pad_row(float w, float hgt) {
         if (ImGui::IsItemHovered()) {
             ImGui::BeginTooltip();
             for (int i = 0; pad_power(i, &w, power, sizeof power); i++)
-                ImGui::Text(menu_text(UI_MENU_PAD_PLAYER), i + 1, w.name), ImGui::SameLine(), ImGui::TextDisabled("%s", power);
+                ImGui::Text(menu_text(UI_MENU_PAD_PLAYER), i + 1, w.name), ImGui::SameLine(0, 8 * s),
+                    ImGui::TextDisabled("%s", power);
             ImGui::EndTooltip();
         }
     } else {

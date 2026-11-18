@@ -172,7 +172,36 @@ def own_children() -> None:
     lim = Limits()
     ctypes.c_uint32.from_buffer(lim.basic, 16).value = 0x2000  # LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     k32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(lim), ctypes.sizeof(lim))
-    k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(k32.GetCurrentProcess()))
+    if k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(k32.GetCurrentProcess())):
+        global _JOB
+        _JOB = job
+
+
+_JOB = None  # own_children's job on Windows: children_cpu reads its accounting
+
+
+def children_cpu() -> float:
+    """CPU seconds of the finished tools so far: os.times' children on POSIX. On Windows those are 0, so the job's
+    total (every process it ever held, ended ones included) minus this process's own; 0 without the job."""
+    if os.name != "nt":
+        t = os.times()
+        return t.children_user + t.children_system
+    if _JOB is None:
+        return 0.0
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):  # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, times in 100 ns
+        _fields_ = [("user", ctypes.c_int64), ("kernel", ctypes.c_int64), ("period_user", ctypes.c_int64),
+                    ("period_kernel", ctypes.c_int64), ("faults", wintypes.DWORD), ("total", wintypes.DWORD),
+                    ("active", wintypes.DWORD), ("terminated", wintypes.DWORD)]  # fmt: skip
+
+    info = Basic()
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not k32.QueryInformationJobObject(wintypes.HANDLE(_JOB), 1, ctypes.byref(info), ctypes.sizeof(info), None):
+        return 0.0
+    own = os.times()
+    return max(0.0, (info.user + info.kernel) / 1e7 - own.user - own.system)
 
 
 def mem_available_gb() -> float:
@@ -214,9 +243,9 @@ def run(
 ) -> None:
     """A tool's run; its 'progress n total' lines (translate.py) pass through, the rest goes to stderr, and at its end
     "time: tool <name> <wall> s, cpu <s> s": a step's line alone did not say which of its tools took the time (the
-    shaders step is spec, extract, translate and pipeline_pairs). The CPU time of the children is 0 on Windows
-    (os.times). on_progress takes the progress lines instead of the start screen (a step run beside, beside.py)."""
-    t0, c0 = time.monotonic(), os.times()
+    shaders step is spec, extract, translate and pipeline_pairs); its CPU is that of every tool that ended meanwhile,
+    a step run beside included (children_cpu). on_progress takes the progress lines instead of the start screen (a step run beside, beside.py)."""
+    t0, c0 = time.monotonic(), children_cpu()
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env)
     tail = []
     for line in p.stdout:
@@ -225,9 +254,9 @@ def run(
         else:
             sys.stderr.write(line)
             tail = (tail + [line.strip()])[-5:]
-    rc, c1 = p.wait(), os.times()
+    rc = p.wait()
     name = Path(cmd[1] if len(cmd) > 1 else cmd[0]).name
-    cpu = c1.children_user + c1.children_system - c0.children_user - c0.children_system
+    cpu = children_cpu() - c0
     print(f"time: tool {name} {time.monotonic() - t0:.1f} s, cpu {cpu:.1f} s", file=sys.stderr)
     if rc:
         raise Failed(f"{name} failed: {' / '.join(tail)}")

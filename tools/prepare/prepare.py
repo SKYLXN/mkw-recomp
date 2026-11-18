@@ -75,8 +75,9 @@ import build  # (GEN_FLAGS, module_glue, game_id: the same game code as build.py
 import game_texts  # (build_all: the game's texts in ca, gl, eu)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gamecode import DamagedSource, compile_game
+from gamecode import DamagedSource, compile_game, cpu_level
 from gamesource import check, is_nx, loose_romfs, unpack
+import seqnodes  # (the phase table Straight to presses through the menus by)
 from gamecopy import BUILD_BYTES, check_space, clear_dir, copy_tree, own_dir, remove_stale, romfs_bytes, tree_bytes
 from nup import Nup
 from machine import (
@@ -88,6 +89,7 @@ from machine import (
     hold_lock,
     mem_available_gb,
     mem_gb,
+    children_cpu,
     own_children,
     run,
     shader_jobs,
@@ -381,7 +383,9 @@ def main() -> None:
             "exefs": str(exefs_src),
             "romfs": f"copy {version.name}" if args.romfs == "copy" else f"link {romfs_src}",
             "generate": f"{build.game_id()} {version.name} {code_key(GENERATOR)}{with_mods}",
-            "compile": f"{build.game_id()} {version.name} {args.target} {code_key(COMPILER)}{with_mods}",
+            # a level only when it is not the default (gamecode.py cpu_level): v3 keeps the key it had without it
+            "compile": f"{build.game_id()} {version.name} {args.target} {code_key(COMPILER)}{with_mods}"
+            + ("" if cpu_level() == "v3" else f" {cpu_level()}"),
             "shaders": f"{version.name} {translator_key()}",
             # with the shaders' key: the prewarm builds the libraries of this SPIR-V (an update that changed only the
             # translator skipped it and left the new libraries to the first start)
@@ -456,7 +460,7 @@ def main() -> None:
                 emit("skip", step)
                 continue
             emit("step", step)
-            t_step, c_step = time.monotonic(), os.times()
+            t_step, c_step = time.monotonic(), children_cpu()
             if step == "exefs":
                 if is_nx(exefs_src):
                     clear_dir(game / "exefs", exefs_src)
@@ -479,8 +483,16 @@ def main() -> None:
                     remove_stale(romfs, romfs_src, set(nup.files("romfs")), version.name)
                     ini_set(game / "mkw.ini", "romfs", "romfs")
                 elif args.romfs == "copy":
-                    copy_tree(romfs_src, romfs, version.romfs_files, version.name)
+                    previous = state.get("romfs_copy_in_progress", state["done"].get("romfs", key))
+                    verify_existing = previous != key
+                    # An interrupted version switch can leave files from both versions. Persist that before
+                    # writing any files so even a switch back checks their bytes instead of skipping the copy.
+                    state["romfs_copy_in_progress"] = None if verify_existing else key
+                    state["done"].pop("romfs", None)
+                    save_state(game, state)
+                    copy_tree(romfs_src, romfs, version.romfs_files, version.name, verify_existing=verify_existing)
                     ini_set(game / "mkw.ini", "romfs", "romfs")
+                    del state["romfs_copy_in_progress"]
                 else:
                     ini_set(game / "mkw.ini", "romfs", str(romfs_src))
             elif step == "generate":
@@ -506,11 +518,16 @@ def main() -> None:
                 # the languages the game does not ship (ca, gl, eu), from this version's translations (the step runs
                 # at every setup, so an update brings its new texts); about a second
                 game_texts.build_all(game, loose_romfs(runtime, romfs, work, "Mals"))
+                # Settings > Hacks > Straight to waits for the game's phases, named by this table (seqnodes.py); a
+                # setup without it left every press of it unfired. About a second, at every setup as above.
+                try:  # optional: a game folder it cannot write leaves only Straight to without its phases
+                    seqnodes.write(game / "exefs", game / f"seq_nodes-{version.number}.tsv")
+                except (OSError, ValueError) as e:
+                    print(f"warning: seq_nodes table not written: {e}", file=sys.stderr)
                 shutil.rmtree(work / "pack", ignore_errors=True)
             state["done"][step] = key
             save_state(dest, state)
-            c = os.times()  # the CPU of its tools (0 on Windows): whether a step leaves cores idle (H1, build/updates)
-            cpu = c.children_user + c.children_system - c_step.children_user - c_step.children_system
+            cpu = children_cpu() - c_step  # the CPU of its tools: whether a step leaves cores idle (H1, build/updates)
             print(f"time: {step} {time.monotonic() - t_step:.1f} s, cpu {cpu:.1f} s", file=sys.stderr)
         for b in (seeding, removing, tidying):
             if b:
