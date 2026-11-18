@@ -389,9 +389,101 @@ static void ui_prompt_place(float *g, int ax, float scale) {
     }
 }
 
+// ---- The race HUD at the screen edges (MKW_HUD_POSITION=edges, opt-in; 1.8.0)
+// The 2D is fitted to the middle 16:9 of a wider or taller picture (host_ui_proj), the race HUD too. With edges, like
+// CSS position: fixed, its pieces go to their own screen edge or corner. MKW places every pane by a translation from
+// the canvas centre (all origins C/C), so the layout carries no anchor to follow: these panes get their edge from
+// hud_anchors, by name, parent and depth below their layout's RootPane (1.8.0's RaceInfo_1 and MiniMap_01: the only
+// panes with those names and parents; the split screen's RaceInfo_2/4 hang from N_ChangeLayout_00 and stay). The
+// offset is added to the pane's global translation right after nn::ui2d builds it, so its children, digits and text
+// follow their frame. Offsets come only from the room beyond the 16:9 fit, 960 (s - 1) on x for a wider output and
+// 540 (1 / s - 1) on y for a taller one, and only while the pane rests in that edge's zone (|x| or |y| >= HUD_ZONE),
+// so an animation that carries a pane to the middle does not push it.
+//   ax: -1 left, +1 right; ay: +1 top, -1 bottom; 0 keeps that axis.
+//   HUD_MINIMAP: the minimap, placed by game code: to the right edge, at the same share of the height; the racers'
+//     map icons (MapIcon_00 layouts, also placed by code) inside its rect move with it.
+enum { HUD_EDGE, HUD_MINIMAP };
+#define HUD_ZONE 300.0f
+typedef struct { const char *pane, *parent; int depth, ax, ay, kind; } HudAnchor;
+static const HudAnchor hud_anchors[] = {
+    {"L_ItemSlot_00", "N_Root", 2, -1, 1, HUD_EDGE},        // item slot: top-left
+    {"N_Pers_00", "N_Root", 2, -1, -1, HUD_EDGE},           // coins, lap (and balloons): bottom-left
+    {"L_Rank_00", "N_Root", 2, 1, -1, HUD_EDGE},            // place: bottom-right
+    {"L_PassingRange_00", "N_Root", 2, 1, -1, HUD_EDGE},    // passing range, by the place
+    {"L_Timer_00", "N_TimeAttack_00", 3, 1, 1, HUD_EDGE},   // time trial timer: top-right
+    {"L_ItemWarning_00", "N_Root", 2, 0, -1, HUD_EDGE},     // incoming item warning: bottom centre
+    {"L_Hit_00", "N_Root", 2, -1, 0, HUD_EDGE},             // hit notice: left
+    {"P_Map_00", "N_SunLight_00", 4, 1, 0, HUD_MINIMAP},    // MiniMap_01
+    {"P_Map_01", "N_SunLight_00", 4, 1, 0, HUD_MINIMAP},
+};
+
+// The canvas offset of an anchor for the output's aspect s (over 16:9) and the pane's own global position (x, y)
+static void hud_offset(const HudAnchor *a, float scale, float x, float y, float *dx, float *dy) {
+    *dx = *dy = 0;
+    if (!(scale > 0)) return;
+    if (scale > 1 && a->ax && (a->kind == HUD_MINIMAP || a->ax * x >= HUD_ZONE)) *dx = (float)a->ax * 960.0f * (scale - 1);
+    if (scale < 1) {
+        if (a->kind == HUD_MINIMAP) *dy = y * (1 / scale - 1);
+        else if (a->ay && a->ay * y >= HUD_ZONE) *dy = (float)a->ay * 540.0f * (1 / scale - 1);
+    }
+}
+
+static const HudAnchor *hud_anchor_of(uint64_t pane) {
+    uint64_t parent = pane_parent(pane), up;
+    if (!parent) return NULL;
+    const char *name = pane_name(pane);
+    for (size_t i = 0; i < sizeof hud_anchors / sizeof *hud_anchors; i++) {
+        const HudAnchor *a = &hud_anchors[i];
+        if (strncmp(name, a->pane, 24) || strncmp(pane_name(parent), a->parent, 24)) continue;
+        int depth = 1;
+        for (up = parent; depth < 32 && pane_parent(up); up = pane_parent(up)) depth++;
+        return depth == a->depth ? a : NULL;
+    }
+    return NULL;
+}
+
+// The minimap as last built: its rect before the move and the move, for the map icons drawn over it
+static struct { float x0, y0, x1, y1, dx, dy; int valid; } hud_map;
+
+// A racer's map icon: the root content pane (N_All_00, under its MapIcon layout's RootPane), in a race, inside the
+// minimap's rect (with a margin for the icon) before the move. Its children follow it.
+static int hud_map_icon(uint64_t pane, const float *g) {
+    if (!hud_map.valid || strncmp(pane_name(pane), "N_All_00", 24)) return 0;
+    uint64_t parent = pane_parent(pane);
+    if (!parent || strncmp(pane_name(parent), "RootPane", 24)) return 0;
+    return g[3] >= hud_map.x0 - 48 && g[3] <= hud_map.x1 + 48 && g[7] >= hud_map.y0 - 48 && g[7] <= hud_map.y1 + 48 &&
+           race_scene_on();
+}
+
+static int hud_edges(void) {
+    static int on = -1;
+    if (on < 0) on = !strcmp(cfg_value("MKW_HUD_POSITION"), "edges");
+    return on;
+}
+
+// An anchored pane, or a map icon, moved to its edge (g: its global matrix, 3x4 row-major)
+static void hud_dock(uint64_t pane, float *g) {
+    const HudAnchor *a = hud_anchor_of(pane);
+    float dx = 0, dy = 0;
+    if (a) {
+        hud_offset(a, aspect_scale, g[3], g[7], &dx, &dy);
+        if (a->kind == HUD_MINIMAP) {
+            // the extent through the whole 2x2: the map's own matrix need not be a plain scale
+            const float *size = (const float *)(uintptr_t)(pane + 0x50);
+            float hw = (fabsf(g[0]) * size[0] + fabsf(g[1]) * size[1]) / 2;
+            float hh = (fabsf(g[4]) * size[0] + fabsf(g[5]) * size[1]) / 2;
+            hud_map.x0 = g[3] - hw, hud_map.x1 = g[3] + hw, hud_map.y0 = g[7] - hh, hud_map.y1 = g[7] + hh;
+            hud_map.dx = dx, hud_map.dy = dy, hud_map.valid = 1;
+        }
+    } else if (hud_map_icon(pane, g)) {
+        dx = hud_map.dx, dy = hud_map.dy;
+    }
+    g[3] += dx, g[7] += dy;
+}
+
 // In place of the 1.8.0 calls of nn::ui2d's pane global-matrix builder (pane, draw info; version.c pane_matrix_fn):
-// the builder itself, then a list mask or a prompt placed for an output that is not 16:9. Children built after it
-// multiply by its matrix.
+// the builder itself, then a list mask, a prompt or (MKW_HUD_POSITION=edges) a race HUD piece placed for an output
+// that is not 16:9. Children built after it multiply by its matrix.
 static void host_pane_matrix(Cpu *c) {
     uint64_t pane = c->x[0], info = c->x[1];
     rt_call(c, rt_main_addr(rt_version()->pane_matrix_fn), 2, pane, info);
@@ -405,6 +497,8 @@ static void host_pane_matrix(Cpu *c) {
         ui_mask_mark(pane, 1);
     } else if (ui_prompt(pane, &ax)) {
         ui_prompt_place(g, ax, aspect_scale);
+    } else if (hud_edges()) {
+        hud_dock(pane, g);
     }
 }
 

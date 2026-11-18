@@ -362,6 +362,24 @@ msgctxt "UI_MENU_ASPECT_WINDOW"
 msgid "Window"
 msgstr "Fenêtre"
 
+msgctxt "UI_MENU_HUD_POSITION"
+msgid "HUD position"
+msgstr ""
+
+msgctxt "UI_MENU_HUD_POSITION_DESC"
+msgid ""
+"On a picture wider or taller than 16:9, keep the race HUD in the middle 16:9 area (the console's "
+"place) or put it at the screen's edges and corners. Takes effect at the next start."
+msgstr ""
+
+msgctxt "UI_MENU_HUD_POSITION_16X9"
+msgid "16:9 area"
+msgstr ""
+
+msgctxt "UI_MENU_HUD_POSITION_EDGES"
+msgid "Screen edges"
+msgstr ""
+
 msgctxt "UI_MENU_PRESENT"
 msgid "Presentation"
 msgstr "Présentation"

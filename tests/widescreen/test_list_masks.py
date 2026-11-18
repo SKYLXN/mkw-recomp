@@ -58,20 +58,30 @@ static uint64_t frame_step_ticks(void) { return tick; }
 static int ov_movie_playing(void) { return movie; }
 static int seqwatch_probe(void) { return 0; }
 #define rt_log(...) ((void)0)
-static unsigned char root[0xe0], parent[0xe0], pane[0xe0];
+static unsigned char anc[4][0xe0], parent[0xe0], pane[0xe0], icon[0xe0];
 static int plat_mem_readable(uint64_t p, size_t n) {
     return p >= (uint64_t)(uintptr_t)pane && p + n <= (uint64_t)(uintptr_t)(pane + sizeof pane);
 }
 static float built[12];
 #define UI_MASK_REST 900.0f
-// The guest builder: writes the pane's global matrix (the fixture's) at +0x70, as main+0x17f89f0 does
+// The guest builder: writes the built global matrix (the fixture's) at the pane's +0x70, as main+0x17f89f0 does
 static uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
     (void)c; (void)n;
     if (fn != 0x17f89f0) exit(9);
-    memcpy(pane + 0x70, built, sizeof built);
+    va_list ap; va_start(ap, n);
+    uint64_t at = va_arg(ap, uint64_t);
+    va_end(ap);
+    memcpy((void *)(uintptr_t)(at + 0x70), built, sizeof built);
     return 0;
 }
+static const char *cfg_value(const char *key) { (void)key; return getenv("HUD") ? getenv("HUD") : "16:9"; }
+static int race_scene_on(void) { return getenv("RACE") != 0; }
 """
+    if "enum { HUD_EDGE" in source:  # the screen-edge race HUD (MKW_HUD_POSITION)
+        code += "static const char *pane_name(uint64_t pane);\nstatic uint64_t pane_parent(uint64_t pane);\n"
+        code += source[source.index("enum { HUD_EDGE") : source.index("// The canvas offset of an anchor")]
+        code += re.search(r"static struct \{ float x0[^\n]*hud_map;\n", source)[0]
+        code += "\n".join(function(source, n) for n in ("hud_offset", "hud_anchor_of", "hud_map_icon", "hud_edges", "hud_dock"))
     code += "\n".join(
         function(source, name)
         for name in (
@@ -91,15 +101,23 @@ static uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
         )
     )
     code += r"""
-// argv: scale name parent_name grandparent(1: N_Root_02 hangs from the root) x width split [y]
+// argv: scale name parent_name above x width split [y]; above: the panes over the parent up to the RootPane (0: the
+// parent is a root). Env ICON=x,y: then a MapIcon root's N_All_00 at x,y is built too and its translation printed.
 int main(int argc, char **argv) {
     if (argc != 8 && argc != 9) return 2;
     aspect_scale = strtof(argv[1], 0); aspect_out = aspect_scale * (16.0f / 9);
     snprintf((char *)pane + 0xb0, 24, "%s", argv[2]);
     snprintf((char *)parent + 0xb0, 24, "%s", argv[3]);
-    snprintf((char *)root + 0xb0, 24, "RootPane");
-    uint64_t p = (uint64_t)(uintptr_t)parent, r = atoi(argv[4]) ? (uint64_t)(uintptr_t)root : 0;
-    memcpy(pane + 0x18, &p, 8); memcpy(parent + 0x18, &r, 8);
+    int above = atoi(argv[4]);
+    unsigned char *up = parent;
+    for (int i = 0; i < above && i < 4; i++) {
+        uint64_t a = (uint64_t)(uintptr_t)anc[i];
+        memcpy(up + 0x18, &a, 8);
+        snprintf((char *)anc[i] + 0xb0, 24, "%s", i == above - 1 ? "RootPane" : "N_All_00");
+        up = anc[i];
+    }
+    uint64_t p = (uint64_t)(uintptr_t)parent;
+    memcpy(pane + 0x18, &p, 8);
     float size[2] = {strtof(argv[6], 0), 1080};
     memcpy(pane + 0x50, size, sizeof size);
     float m[12] = {1,0,0,strtof(argv[5], 0), 0,1,0,argc == 9 ? strtof(argv[8], 0) : 0, 0,0,1,0};
@@ -118,7 +136,21 @@ int main(int argc, char **argv) {
     // -960 s and 960 s on a wider output s): x times the drawn x scale (1 / s narrowed, 1 wide) times s
     float k = out[0] * (aspect_scale > 1 ? aspect_scale : 1);
     float l = (g[3] - g[0] * size[0] / 2) * k, r2 = (g[3] + g[0] * size[0] / 2) * k;
-    printf("%.3f %.3f %.6g %.6g %.6g %.6g %.6g\n", l, r2, g[0], out[0], g[3], g[5], g[7]);
+    printf("%.3f %.3f %.6g %.6g %.6g %.6g %.6g", l, r2, g[0], out[0], g[3], g[5], g[7]);
+    if (getenv("ICON")) {   // a racer's map icon: N_All_00 under its MapIcon layout's RootPane
+        uint64_t r = (uint64_t)(uintptr_t)anc[3];
+        memset(anc[3], 0, sizeof anc[3]);
+        snprintf((char *)anc[3] + 0xb0, 24, "RootPane");
+        snprintf((char *)icon + 0xb0, 24, "N_All_00");
+        memcpy(icon + 0x18, &r, 8);
+        float im[12] = {1,0,0,strtof(getenv("ICON"), 0), 0,1,0,strtof(strchr(getenv("ICON"), ',') + 1, 0), 0,0,1,0};
+        memcpy(built, im, sizeof im);
+        Cpu e = {0}; e.x[0] = (uint64_t)(uintptr_t)icon;
+        host_pane_matrix(&e);
+        memcpy(g, icon + 0x70, sizeof g);
+        printf(" %.6g %.6g", g[3], g[7]);
+    }
+    printf("\n");
 }
 """
     root = tmp_path_factory.mktemp("list-masks")
