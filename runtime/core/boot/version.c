@@ -98,6 +98,7 @@ static const RtVersion versions[] = {
         .aspect_first_lr = 0x8a6d8,   // 1.0.0's 460d44 (its fdiv at 8a6d4)
         .fov_entry_x = 20,            // main+0x894a4, 1.0.0's 45fba4: fmul s8, s0, s14, entry in x20
         .fov_half_v = 14,
+        .pane_matrix_fn = 0x17f89f0,
         .ui_focus_fn = 0x7fd810,
         .camera_service = 0x378ecb8,   // RELATIVE at main+0x36f4148; 9 functions load it
         .race_events = RACE_EVENTS(0x353f5c0, 0x35448c0, 0x354a5d8, 0x353b3a0, 0x353f180, 0x3539c68, 0x3539db8,

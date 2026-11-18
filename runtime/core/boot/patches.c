@@ -35,6 +35,7 @@
 #define CAMERA_EVENT_HOST 0xf50  // patch page offset of host_camera_event (set camera, 1.8.0)
 #define UI_ROWS2_HOST 0xf40      // patch page offset of host_ui_rows2 (set aspect, 1.8.0)
 #define FX_VIEW_HOST 0xf20       // patch page offset of host_fx_view (set aspect)
+#define PANE_MATRIX_HOST 0xdf0   // patch page offset of host_pane_matrix (set aspect, 1.8.0), below race_scene.c's
                                  // 0xe00-0xef0: race_scene.c, one per node (RT_RACE_HOST)
 // The guest functions the sets call or recognise, per game version (version.h; 1.0.0: main+0x233358 RenderBuffer
 // creation, main+0x8eb6b0 the render-buffer allocator setup that main+0x37b520 allocates from, main+0x67aa40 operator
@@ -309,6 +310,72 @@ static int ui_tall_backdrop(const Cpu *c) {
         (!memcmp(name, "P_Cap_00", 9) || !memcmp(name, "P_Cap_01", 9));
 }
 
+// The character and kart lists' capture masks on a wider output. CharaSelect_00 and MachineSelect_00 hold P_Cap_00 and
+// P_Cap_01 (100 units wide) under N_Root_02, at the list's outer and inner edge (1.8.0's layouts: the only P_Cap_* with
+// that parent). They cover the list's edges with the screen's own backdrop, so the cards fade under the glass. A mask
+// takes that backdrop at texture coordinates from its own canvas place, u = (x + 960) / 1920, while the backdrop is
+// drawn wide and the mask narrowed: at 21:9 the outer mask, drawn at x / 1.33, showed the backdrop of x, a column 300
+// pixels to its left, with a hard seam through the cards and the footer (hiding P_Cap_00 removed the seam; stretching
+// it to the edge smeared the footer, as its u stayed on the canvas). So the mask's canvas place is divided by s and
+// host_ui_proj draws it with the widened projection: it shows on screen exactly where it was, and it samples the
+// backdrop under itself. The outer mask, while it rests at the list's outer edge (-908.6 character, -928.1 kart; the
+// list's State animation carries it to -450), first reaches out to the screen edge, so the glass and the footer run
+// to x = 0 as the screen edge closes them at 16:9. Its inner side, at the list, does not move.
+#define UI_MASK_REST 900.0f
+
+static const char *pane_name(uint64_t pane) { return (const char *)(uintptr_t)(pane + 0xb0); }
+static uint64_t pane_parent(uint64_t pane) { return *(const uint64_t *)(uintptr_t)(pane + 0x18); }
+
+// -1: the outer mask, 1: the inner one, 0: another pane (P_Cap_0x < N_Root_02 < the RootPane)
+static int ui_list_mask(uint64_t pane) {
+    const char *name = pane_name(pane);
+    if (strncmp(name, "P_Cap_0", 7) || (name[7] != '0' && name[7] != '1') || name[8]) return 0;
+    uint64_t parent = pane_parent(pane);
+    if (!parent || strncmp(pane_name(parent), "N_Root_02", 24) || !pane_parent(parent) ||
+        pane_parent(pane_parent(parent)))
+        return 0;
+    return name[7] == '0' ? -1 : 1;
+}
+
+// The masks placed by host_pane_matrix (add) and whether a drawn pane is one (query): by address and name, so a
+// freed pane's address taken by another pane is not drawn wide
+static int ui_mask_mark(uint64_t pane, int add) {
+    static struct { uint64_t pane; char name[24]; } set[8];
+    static unsigned next;
+    const char *name = pane_name(pane);
+    for (unsigned i = 0; i < 8; i++)
+        if (set[i].pane == pane && !strncmp(set[i].name, name, 24)) return 1;
+    if (!add) return 0;
+    unsigned at = next++ % 8;
+    set[at].pane = pane;
+    strncpy(set[at].name, name, 24);
+    return 1;
+}
+
+// A mask's global x row and translation (3x4 row-major g, width w) for a wider output s: the outer side to the screen
+// edge while it rests there, then divided by s
+static void ui_mask_place(int side, float *g, float w, float scale) {
+    float hw = g[0] * w / 2, l = g[3] - hw, r = g[3] + hw;
+    if (side < 0 && l <= -UI_MASK_REST) l = -960.0f * scale;
+    if (w > 0) g[0] = (r - l) / w;
+    g[3] = (l + r) / 2;
+    g[0] /= scale, g[1] /= scale, g[2] /= scale, g[3] /= scale;
+}
+
+// In place of the 1.8.0 calls of nn::ui2d's pane global-matrix builder (pane, draw info; version.c pane_matrix_fn):
+// the builder itself, then a list mask placed for a wider output. Children built after it multiply by its matrix.
+static void host_pane_matrix(Cpu *c) {
+    uint64_t pane = c->x[0], info = c->x[1];
+    rt_call(c, rt_main_addr(rt_version()->pane_matrix_fn), 2, pane, info);
+    if (!(aspect_scale > 1)) return;
+    uint64_t at = split_at;
+    if (at && frame_step_ticks() + 1 - at < 30) return;   // a split screen keeps its place
+    int side = ui_list_mask(pane);
+    if (!side) return;
+    ui_mask_place(side, (float *)(uintptr_t)(pane + 0x70), ((const float *)(uintptr_t)(pane + 0x50))[0], aspect_scale);
+    ui_mask_mark(pane, 1);
+}
+
 static void host_ui_proj(Cpu *c) {
     float *s = (float *)(uintptr_t)(c->x[0] + 0x10);
     float *m = (float *)(uintptr_t)c->x[1];
@@ -325,6 +392,9 @@ static void host_ui_proj(Cpu *c) {
     if ((full == 1 || ui_tall_backdrop(c)) && !ov_movie_playing()) {
         if (aspect_scale < 1) m[5] /= aspect_scale, m[7] /= aspect_scale;
         else m[0] *= aspect_scale, m[3] *= aspect_scale;
+    } else if (full == 0 && aspect_scale > 1 && c->x[22] == c->x[23] - 0x20 && plat_mem_readable(c->x[23] - 0x70, 0xe0) &&
+               ui_mask_mark(c->x[23] - 0x70, 0)) {
+        m[0] *= aspect_scale, m[3] *= aspect_scale;   // a list mask placed by host_pane_matrix: drawn wide, where it was
     }
     // A split screen (uw14-split): each player's HUD is on its half of the canvas (its quarter with three or four,
     // left or right all the same), now in the middle of the picture; moved to the middle of its half of the picture,
@@ -556,6 +626,7 @@ void rt_patch_hosts(void) {
     if (g->npatch_sets) rt_register_host(g->patch_page + UI_ROWS_HOST, host_ui_rows);
     if (g->npatch_sets) rt_register_host(g->patch_page + UI_ROWS2_HOST, host_ui_rows2);
     if (g->npatch_sets) rt_register_host(g->patch_page + FX_VIEW_HOST, host_fx_view);
+    if (g->npatch_sets) rt_register_host(g->patch_page + PANE_MATRIX_HOST, host_pane_matrix);
     if (g->npatch_sets) frame_rate_host(g->patch_page);
     if (g->npatch_sets) race_scene_host(g->patch_page);
     if (g->npatch_sets) rt_register_host(g->patch_page + CAMERA_EVENT_HOST, host_camera_event);
