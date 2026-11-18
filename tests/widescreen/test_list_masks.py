@@ -57,13 +57,12 @@ static uint64_t rt_main_addr(uint64_t p) { return p; }
 static uint64_t frame_step_ticks(void) { return tick; }
 static int ov_movie_playing(void) { return movie; }
 static int seqwatch_probe(void) { return 0; }
-#define rt_log(...) ((void)0)
+static void rt_log(const char *fmt, ...) { (void)fmt; }
 static unsigned char anc[4][0xe0], parent[0xe0], pane[0xe0], icon[0xe0];
 static int plat_mem_readable(uint64_t p, size_t n) {
     return p >= (uint64_t)(uintptr_t)pane && p + n <= (uint64_t)(uintptr_t)(pane + sizeof pane);
 }
 static float built[12];
-#define UI_MASK_REST 900.0f
 // The guest builder: writes the built global matrix (the fixture's) at the pane's +0x70, as main+0x17f89f0 does
 static uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
     (void)c; (void)n;
@@ -77,29 +76,11 @@ static uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
 static const char *cfg_value(const char *key) { (void)key; return getenv("HUD") ? getenv("HUD") : "16:9"; }
 static int race_scene_on(void) { return getenv("RACE") != 0; }
 """
-    if "enum { HUD_EDGE" in source:  # the screen-edge race HUD (MKW_HUD_POSITION)
-        code += "static const char *pane_name(uint64_t pane);\nstatic uint64_t pane_parent(uint64_t pane);\n"
-        code += source[source.index("enum { HUD_EDGE") : source.index("// The canvas offset of an anchor")]
-        code += re.search(r"static struct \{ float x0[^\n]*hud_map;\n", source)[0]
-        code += "\n".join(function(source, n) for n in ("hud_offset", "hud_anchor_of", "hud_map_icon", "hud_edges", "hud_dock"))
-    code += "\n".join(
-        function(source, name)
-        for name in (
-            "is_16x9",
-            "ui_full_screen",
-            "aspect_ui_fit",
-            "ui_tall_backdrop",
-            "pane_name",
-            "pane_parent",
-            "ui_list_mask",
-            "ui_mask_mark",
-            "ui_mask_place",
-            "ui_prompt",
-            "ui_prompt_place",
-            "host_pane_matrix",
-            "host_ui_proj",
-        )
-    )
+    # the pane-matrix hook with everything it calls: the masks, the prompts and the screen-edge HUD
+    code += '#include "core/boot/hud_layouts.h"\n'
+    code += 'static const char *cfg_get(const char *key) { (void)key; return NULL; }\n'
+    code += source[source.index("#define UI_MASK_REST") : source.index("static void host_ui_proj(Cpu *c)")]
+    code += "\n".join(function(source, name) for name in ("is_16x9", "ui_full_screen", "aspect_ui_fit", "ui_tall_backdrop", "host_ui_proj"))
     code += r"""
 // argv: scale name parent_name above x width split [y]; above: the panes over the parent up to the RootPane (0: the
 // parent is a root). Env ICON=x,y: then a MapIcon root's N_All_00 at x,y is built too and its translation printed.
