@@ -362,18 +362,50 @@ static void ui_mask_place(int side, float *g, float w, float scale) {
     g[0] /= scale, g[1] /= scale, g[2] /= scale, g[3] /= scale;
 }
 
+// The race and pause prompts (KeyAssign_00: "Photo Mode", "Settings", the controller guide) on an output that is not
+// 16:9. The game draws them with the 16:9 projection over the whole picture, not the fitted one, so they sit at the
+// display's corners as on the console, but their shape is stretched by the output's aspect over 16:9 (s): the "Photo
+// Mode" box's width over its height is 7.9 at 16:9, 10.5 at 21:9 and 16.3 at 32:9, and squashed on a taller output.
+// Their two groups, L_Key_02 under N_LeftKey_00 (bottom left) and A_Align_00 under N_Key_00 (bottom right; the only
+// panes of 1.8.0's layouts with those names and parents), are placed at (x + dx) / s with their x row divided by s,
+// which is where and as wide as the fitted projection shows them moved by dx = 960 (s - 1) to their side: the same
+// corner, the 16:9 shape. On a taller output the same on y. Their children follow through the matrix.
+static int ui_prompt(uint64_t pane, int *ax) {
+    uint64_t parent = pane_parent(pane);
+    if (!parent) return 0;
+    const char *name = pane_name(pane), *up = pane_name(parent);
+    if (!strncmp(name, "L_Key_02", 24) && !strncmp(up, "N_LeftKey_00", 24)) return *ax = -1, 1;
+    if (!strncmp(name, "A_Align_00", 24) && !strncmp(up, "N_Key_00", 24)) return *ax = 1, 1;
+    return 0;
+}
+
+static void ui_prompt_place(float *g, int ax, float scale) {
+    if (scale > 1) {
+        g[0] /= scale, g[1] /= scale, g[2] /= scale;
+        g[3] = (g[3] + (float)ax * 960.0f * (scale - 1)) / scale;
+    } else {   // both groups are at the bottom: dy = -540 (1 / s - 1)
+        g[4] *= scale, g[5] *= scale, g[6] *= scale;
+        g[7] = (g[7] - 540.0f * (1 / scale - 1)) * scale;
+    }
+}
+
 // In place of the 1.8.0 calls of nn::ui2d's pane global-matrix builder (pane, draw info; version.c pane_matrix_fn):
-// the builder itself, then a list mask placed for a wider output. Children built after it multiply by its matrix.
+// the builder itself, then a list mask or a prompt placed for an output that is not 16:9. Children built after it
+// multiply by its matrix.
 static void host_pane_matrix(Cpu *c) {
     uint64_t pane = c->x[0], info = c->x[1];
     rt_call(c, rt_main_addr(rt_version()->pane_matrix_fn), 2, pane, info);
-    if (!(aspect_scale > 1)) return;
+    if (!(aspect_scale > 0) || aspect_scale == 1) return;
     uint64_t at = split_at;
     if (at && frame_step_ticks() + 1 - at < 30) return;   // a split screen keeps its place
-    int side = ui_list_mask(pane);
-    if (!side) return;
-    ui_mask_place(side, (float *)(uintptr_t)(pane + 0x70), ((const float *)(uintptr_t)(pane + 0x50))[0], aspect_scale);
-    ui_mask_mark(pane, 1);
+    float *g = (float *)(uintptr_t)(pane + 0x70);
+    int side = aspect_scale > 1 ? ui_list_mask(pane) : 0, ax;
+    if (side) {
+        ui_mask_place(side, g, ((const float *)(uintptr_t)(pane + 0x50))[0], aspect_scale);
+        ui_mask_mark(pane, 1);
+    } else if (ui_prompt(pane, &ax)) {
+        ui_prompt_place(g, ax, aspect_scale);
+    }
 }
 
 static void host_ui_proj(Cpu *c) {

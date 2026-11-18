@@ -84,14 +84,16 @@ static uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
             "ui_list_mask",
             "ui_mask_mark",
             "ui_mask_place",
+            "ui_prompt",
+            "ui_prompt_place",
             "host_pane_matrix",
             "host_ui_proj",
         )
     )
     code += r"""
-// argv: scale name parent_name grandparent(1: N_Root_02 hangs from the root) x width split
+// argv: scale name parent_name grandparent(1: N_Root_02 hangs from the root) x width split [y]
 int main(int argc, char **argv) {
-    if (argc != 8) return 2;
+    if (argc != 8 && argc != 9) return 2;
     aspect_scale = strtof(argv[1], 0); aspect_out = aspect_scale * (16.0f / 9);
     snprintf((char *)pane + 0xb0, 24, "%s", argv[2]);
     snprintf((char *)parent + 0xb0, 24, "%s", argv[3]);
@@ -100,7 +102,7 @@ int main(int argc, char **argv) {
     memcpy(pane + 0x18, &p, 8); memcpy(parent + 0x18, &r, 8);
     float size[2] = {strtof(argv[6], 0), 1080};
     memcpy(pane + 0x50, size, sizeof size);
-    float m[12] = {1,0,0,strtof(argv[5], 0), 0,1,0,0, 0,0,1,0};
+    float m[12] = {1,0,0,strtof(argv[5], 0), 0,1,0,argc == 9 ? strtof(argv[8], 0) : 0, 0,0,1,0};
     memcpy(built, m, sizeof m);
     if (atoi(argv[7])) split_at = tick;
     Cpu c = {0}; c.x[0] = (uint64_t)(uintptr_t)pane;
@@ -116,7 +118,7 @@ int main(int argc, char **argv) {
     // -960 s and 960 s on a wider output s): x times the drawn x scale (1 / s narrowed, 1 wide) times s
     float k = out[0] * (aspect_scale > 1 ? aspect_scale : 1);
     float l = (g[3] - g[0] * size[0] / 2) * k, r2 = (g[3] + g[0] * size[0] / 2) * k;
-    printf("%.3f %.3f %.6g %.6g\n", l, r2, g[0], out[0]);
+    printf("%.3f %.3f %.6g %.6g %.6g %.6g %.6g\n", l, r2, g[0], out[0], g[3], g[5], g[7]);
 }
 """
     root = tmp_path_factory.mktemp("list-masks")
@@ -129,9 +131,10 @@ int main(int argc, char **argv) {
     return root / "test.exe"
 
 
-def run(exe, scale, name, parent, depth_ok, x, width=100, split=0):
-    out = subprocess.check_output([str(exe), str(scale), name, parent, str(depth_ok), str(x), str(width), str(split)])
-    return list(map(float, out.split()))
+def run(exe, scale, name, parent, depth_ok, x, width=100, split=0, y=None):
+    args = [str(exe), str(scale), name, parent, str(depth_ok), str(x), str(width), str(split)]
+    out = subprocess.check_output(args + ([str(y)] if y is not None else []))
+    return list(map(float, out.split()))[:4] if y is None else list(map(float, out.split()))
 
 
 @pytest.mark.parametrize("scale", [2560 / 1080 / (16 / 9), 3840 / 1080 / (16 / 9)])
@@ -168,3 +171,36 @@ def test_other_panes_outputs_and_split_screens_are_left_alone(masks, scale, name
     assert gx == 1
     if scale > 1:
         assert px == pytest.approx(1 / scale)  # the ordinary narrowed projection
+
+
+# KeyAssign_00's two prompt groups: (pane, parent, side, rest x and y of their global translation in 1.8.0's layout)
+PROMPTS = [("L_Key_02", "N_LeftKey_00", -1, -902.75, -500.0), ("A_Align_00", "N_Key_00", 1, 909.55, -500.0)]
+
+
+@pytest.mark.parametrize("scale", [2560 / 1080 / (16 / 9), 3840 / 1080 / (16 / 9)])
+@pytest.mark.parametrize("name,parent,side,x,y", PROMPTS)
+def test_prompts_keep_their_corner_and_their_16x9_shape_on_wider_outputs(masks, scale, name, parent, side, x, y):
+    *_, gx, px, tx, gy, ty = run(masks, scale, name, parent, 0, x, split=0, y=y)
+    # drawn over the whole picture by the 16:9 projection: canvas x shows at x * s in fitted units, so the group shows
+    # at its own x moved to its side (x + 960 (s - 1)) and one unit wide per unit
+    assert gx * scale == pytest.approx(1) and tx * scale == pytest.approx(x + side * 960 * (scale - 1))
+    assert (gy, ty) == (1, y)
+
+
+@pytest.mark.parametrize("name,parent,side,x,y", PROMPTS)
+def test_prompts_keep_their_corner_and_their_16x9_shape_on_taller_outputs(masks, name, parent, side, x, y):
+    scale = 2448 / 1848 / (16 / 9)
+    *_, gx, px, tx, gy, ty = run(masks, scale, name, parent, 0, x, split=0, y=y)
+    assert (gx, tx) == (1, pytest.approx(x))
+    assert gy / scale == pytest.approx(1) and ty / scale == pytest.approx(y - 540 * (1 / scale - 1))
+
+
+@pytest.mark.parametrize("name,parent", [("L_Key_02", "A_alignment_00"), ("A_Align_00", "N_All_00"), ("L_Key_00", "N_Key_00")])
+def test_other_key_guides_keep_their_matrix(masks, name, parent):
+    *_, gx, px, tx, gy, ty = run(masks, 1.333, name, parent, 0, 500, split=0, y=-500)
+    assert (gx, tx, gy, ty) == (1, 500, 1, -500)
+
+
+def test_prompts_in_a_split_screen_keep_their_matrix(masks):
+    *_, gx, px, tx, gy, ty = run(masks, 1.333, "L_Key_02", "N_LeftKey_00", 0, -902.75, split=1, y=-500)
+    assert (gx, tx) == (1, -902.75)
