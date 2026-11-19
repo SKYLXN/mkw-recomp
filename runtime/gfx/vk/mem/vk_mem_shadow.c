@@ -480,6 +480,9 @@ static void early_main(void *arg) {
     }
 }
 
+static PlatThread *early_thread;   // "vk shadow", for vk_backend.c's placement (MKW_SIBLING_HELPERS)
+PlatThread *vk_mem_shadow_thread(void) { return __atomic_load_n(&early_thread, __ATOMIC_ACQUIRE); }
+
 void vk_mem_shadow_sync(uint64_t fence) {
     if (!shadow_on) return;
     uint64_t t0 = qpc();
@@ -500,7 +503,9 @@ void vk_mem_shadow_sync(uint64_t fence) {
         int m = rt_knob("SHADOW_EARLY", "1");
         if (m) {
             plat_cond_init(&touch_cv);
-            if (!plat_thread_spawn(early_main, NULL, "vk shadow", 0)) rt_fatal("vk: cannot start the shadow thread");
+            PlatThread *t = plat_thread_new(early_main, NULL, "vk shadow");   // kept: vk_backend.c places it
+            if (!t) rt_fatal("vk: cannot start the shadow thread");
+            __atomic_store_n(&early_thread, t, __ATOMIC_RELEASE);
         }
         rt_log("mem: early shadow syncs %s (MKW_SHADOW_EARLY)", m == 2 ? "in the B blocks" : m ? "on" : "off");
         __atomic_store_n(&early_mode, m, __ATOMIC_RELEASE);

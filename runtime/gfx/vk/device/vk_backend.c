@@ -316,8 +316,23 @@ static void helpers_place(uint64_t mask) {
         if (h[i]) plat_thread_affinity(h[i], mask);
 }
 
+// MKW_SIBLING_HELPERS (default 0; "ab" in the B blocks only; with MKW_REPLAY_CORE on): "vk completion" and "vk shadow"
+// on the other logical processor of the replay thread's core, which MKW_REPLAY_CORE leaves idle, instead of with the
+// game's threads. Why: on a Steam Deck (4 cores with SMT, the profile's REPLAY_CORE) the three other cores are the
+// whole frame's CPU: MKW_REPLAY_PAR's chunk threads there made the 1-player frame +5.0 to +6.2 ms (deck_bench,
+// 19/11/2026), and the completion thread took ~3.0 ms a frame from the GPU's end to the game's release for ~0.6 ms of
+// callbacks (MKW_TRACE_TL), waiting for a processor; "vk shadow" runs ~5 ms a frame of early syncs. The cost to weigh:
+// the replay shares its core again (Hookshot: ~1.7x slower beside the game's threads), with two threads that mostly
+// wait. Not measured yet.
+static void sibling_place(uint64_t mask) {
+    PlatThread *h[2] = {vk_sync_completion_thread(), vk_mem_shadow_thread()};
+    for (int i = 0; i < 2; i++)
+        if (h[i]) plat_thread_affinity(h[i], mask);
+}
+
 static void replay_core(void) {
-    static int mode = -1, fmode = 0, smode = 0, applied = 0, placed = 0, c = -1;
+    static int mode = -1, fmode = 0, smode = 0, hmode = 0, applied = 0, placed = 0, c = -1;
+    static uint64_t sib;
     static uint64_t all, own, fast;
     if (mode < 0) {
         uint64_t first;
@@ -339,6 +354,16 @@ static void replay_core(void) {
             rt_log("vk: the replay thread alone on processor %d (the last of %d %s cores), the others off its core%s "
                    "(MKW_REPLAY_CORE)", c, __builtin_popcountll(pick), pick == first ? "physical" : "fastest",
                    mode == 2 ? " in the B blocks" : "");
+            sib = plat_cpu_core_of(c) & all & ~own;
+            hmode = rt_knob("SIBLING_HELPERS", "0");
+            if (hmode && !sib) {
+                rt_log("vk: the replay's core has no other processor (no SMT): vk completion and vk shadow stay with the "
+                       "frame's threads (MKW_SIBLING_HELPERS)");
+                hmode = 0;
+            } else if (hmode) {
+                rt_log("vk: vk completion and vk shadow on the replay core's other processor (%#llx)%s (MKW_SIBLING_HELPERS)",
+                       (unsigned long long)sib, hmode == 2 ? " in the B blocks" : "");
+            }
             smode = rt_knob("SUBMIT_APART", "1");
             rt_log("vk: vk submit and vk present %s (MKW_SUBMIT_APART)",
                    smode == 2 ? "with the frame's threads in the B blocks, on the replay's processor in the A blocks"
@@ -364,7 +389,9 @@ static void replay_core(void) {
         }
     }
     int on = RT_KNOB_ON(mode), fon = fmode ? RT_KNOB_ON(fmode) : 0, son = smode ? RT_KNOB_ON(smode) : 0,
-        state = on | fon << 1 | son << 2, helpers = !!vk_sync_submit_thread() + !!present_thread;
+        hon = hmode ? RT_KNOB_ON(hmode) : 0, state = on | fon << 1 | son << 2 | hon << 3,
+        helpers = !!vk_sync_submit_thread() + !!present_thread + (hmode ? !!vk_sync_completion_thread() * 4 +
+                                                                      !!vk_mem_shadow_thread() * 8 : 0);
     if (state == applied && helpers == placed) return;
     uint64_t base = fon ? fast : all, others = on ? base & ~plat_cpu_core_of(c) : base;
     if (state != applied) {
@@ -372,6 +399,7 @@ static void replay_core(void) {
         plat_thread_affinity(NULL, on ? own : base);
     }
     if (mode) helpers_place(on && !son ? own : others);
+    if (hmode) sibling_place(on && hon ? sib : others);   // (plat_process_affinity put them with the others)
     applied = state, placed = helpers;
 }
 

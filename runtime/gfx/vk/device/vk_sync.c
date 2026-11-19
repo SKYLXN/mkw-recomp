@@ -160,6 +160,7 @@ static void submit_main(void *arg) {
 }
 
 PlatThread *vk_sync_submit_thread(void) { return __atomic_load_n(&submit_thread, __ATOMIC_ACQUIRE); }
+PlatThread *vk_sync_completion_thread(void) { return __atomic_load_n(&completion_thread, __ATOMIC_ACQUIRE); }
 
 // Queue lock held, the part's order taken: parts[] gets it, or the queue now when it is full.
 static void part_defer(const VkSubmitInfo2 *si, const VkCommandBufferSubmitInfo *cbi, int ncbi,
@@ -362,8 +363,9 @@ void vk_sync_start(void) {
             if (vkCreateSemaphore(c->device, &si, NULL, &part_sem) != VK_SUCCESS) rt_fatal("vk: part semaphore");
         }
         vk_mem_note_submit(part_val);
-        completion_thread = plat_thread_new(completion_main, c, "vk completion");
-        if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
+        PlatThread *ct = plat_thread_new(completion_main, c, "vk completion");
+        if (!ct) rt_fatal("vk: cannot start the completion thread");
+        __atomic_store_n(&completion_thread, ct, __ATOMIC_RELEASE);
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
         vk_astc_mode();   // decides MKW_ASTC and builds the ASTC decoder now, not at the first ASTC upload
     }
