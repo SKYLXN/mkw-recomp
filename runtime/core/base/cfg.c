@@ -301,8 +301,16 @@ int cfg_reload_key(const char *name) {
 // passes of that size taking 16 of the GPU's 42 ms a frame (MKW_PASS_TIMING with MKW_VK_RECORDER=0). With 720 they
 // go: race median 36.3 -> 23.4 ms (time trial, low quality preset, UMA 1 GB, 13/11/2026), 35.7 -> 24.6 ms without the
 // timing; a docked Deck on a large screen can pick a higher one in the menu.
+// GPU_CLOCKS peak and REPLAY_CORE 1: a 1-player race frame there is a chain the replay thread's recording leads
+// (19-23 ms of its time a frame), with the GPU busy 12-13 ms at the ~800 MHz amdgpu leaves a half-idle GPU, and the APU
+// at 7-8 W of its 15 W. In-run A/Bs with their inverted twins (tools/run/deck_bench.sh: OLED Galileo, SteamOS 3.9.5,
+// 0.1.15, Grand Prix at MKW_FPS=60, Low rows, 720 lines, 19/11/2026), scene balanced, means and medians:
+// MKW_GPU_CLOCKS=ab -3.3 and -3.7 ms a frame (GPU busy -2.6 ms; 1243-1289 MHz, 10.5-10.8 W, 68 against 64 C), unlike
+// the 660M's +1.9 ms (vk_pstate.c): the Deck's CPU keeps its clock at that power; MKW_REPLAY_CORE=ab -2.2 and -4.1 ms
+// (the replay -2.8 ms). One pair each, a Deck LCD (Jupiter) not measured yet.
 static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"VK_PRESENT", "fifo"}, {"RESOLUTION", "720"},
+    {"GPU_CLOCKS", "peak"}, {"REPLAY_CORE", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck
 

@@ -20,6 +20,8 @@
 // with MKW_FPS=60 and its inverted twin over 40 s of race: +1.9 ms a frame with the peak held (scene balanced), the
 // GPU 2.2-3.1 ms faster and the recording CPU 1.1-1.4 ms slower (gc-ab3, gc-ab3i, 17/11/2026); at the game's own
 // pace the race stayed at 15 fps either way (gc-ab1). "ab" holds the peak pstate in the B blocks only (MKW_AB).
+// The Steam Deck's device profile sets peak (runtime/core/base/cfg.c DECK[]): there the same A/B gave -3.3 ms a
+// frame in one player, the APU at 10.8 W of its 15 W (deck_bench, OLED, 19/11/2026).
 //
 // Only from amdgpu's automatic level: the kernel counts a manual or high level (sysfs power_dpm_force_performance_level,
 // set by LACT, CoreCtrl or SteamOS's GPU clock slider) as no stable pstate, and when our context ends it puts back

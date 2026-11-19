@@ -271,8 +271,9 @@ static void held_wait(Held *h) {
 // thread off that core. Hookshot measured the replay ~1.7x slower sharing a core with the game's threads; the
 // replay's recording is on the race frame's critical path (frame-carrera). rc-ab1..4
 // (6 cores with SMT, Radeon 660M, 08/11/2026): race frame -1.17 ms (means), -1.03 (medians) with the scene balanced.
-// wrc1/wrc1i (i5-8400, 6 cores without SMT, GTX 1050 Ti): +4.8 ms, a whole core taken from the game's threads. Fewer
-// cores were not measured. The core is the last of the fastest ones (plat_cpu_fast): the last core alone was an
+// wrc1/wrc1i (i5-8400, 6 cores without SMT, GTX 1050 Ti): +4.8 ms, a whole core taken from the game's threads. A
+// Steam Deck (4 cores with SMT, one player): -2.2 ms (means), -4.1 (medians), the replay -2.8 ms (deck_bench, OLED,
+// 19/11/2026), so its device profile turns it on (runtime/core/base/cfg.c DECK[]). The core is the last of the fastest ones (plat_cpu_fast): the last core alone was an
 // efficiency core on a hybrid CPU, processor 27 of an i7-14700F at 4.2 GHz against 5.4, and the race frame took
 // +4.0 ms (means, +5.1 medians, scene balanced: rc1/rc1i, RX 6700 XT, 16/11/2026) against the replay thread left
 // unpinned. The others are every processor but those of that core (plat_cpu_core_of): taking the lower-numbered ones
