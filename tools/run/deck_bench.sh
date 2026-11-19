@@ -12,11 +12,13 @@
 # Runs, in this order (about 4.5 minutes each: boot, menus at turbo speed, RACE_SECS of race, a pause):
 #   base            the frame's breakdown (MKW_TRACE_TL) at MKW_FPS=60; also warms the pipeline cache for the A/Bs
 #   own             the player's own settings, untouched (MKW_FPS, quality, frame generation...): the experience
-#   ab-replay-par   MKW_REPLAY_PAR=ab, plain and inverted: recording in chunks (off by default below 6 cores, a rule
-#                   measured with 2 players; 1 player leaves about half the Deck's CPU idle)
-#   ab-queue-waits  MKW_QUEUE_WAITS=ab: the replay waits up to 3 ms per held submission (B = the default, on)
-#   ab-gpu-clocks   MKW_GPU_CLOCKS=ab: the peak pstate in the B blocks (skipped when the GPU's clock is set by hand)
-#   ab-replay-core  MKW_REPLAY_CORE=ab: the replay thread alone on a physical core (never measured below 6 cores)
+#   ab-*            each switch of AB_PAIRS below at ab, a plain run and its inverted twin: the changes not yet measured
+#                   (all off by default in the build, so A is today's behaviour)
+#   ab-known-*      only with --only ab-known: the pairs already measured twice on a Deck (MKW_REPLAY_PAR, MKW_QUEUE_WAITS,
+#                   MKW_REPLAY_CORE), to check them again on a new build
+#   hang-*          only with --only hang: whether a stable pstate switch mid-race hangs a Steam Deck (one did, 19/11/2026):
+#                   MKW_GPU_CLOCKS=ab every 2 s without and with MKW_PSTATE_DRAIN, and the peak held from the start, two
+#                   runs each, with per-draw breadcrumbs (MKW_GPU_CRUMBS_DRAW). A hang resets the GPU: only on purpose
 #   res540          the scene at 540 lines with FSR 1 to the screen, at MKW_FPS=60: the GPU's share at a lower load
 #   fg-off, fg-2    MKW_FPS=30 with frame generation off, then 2x (60 shown); fg-3 (90 shown) too on an OLED
 #   preset-*        only with --preset: quality Low against Console in the order L C C L, at MKW_FPS=60
@@ -33,7 +35,8 @@
 # (tools/run/README.md, race.sh). No root, repository or Python. Results: ~/mkw-bench/<date>/ (a log per run,
 # samples.csv, report.txt, sysinfo.txt) and a .tar.gz of it, read on a PC with tools/run/ab.py, summary.py, gpucmp.py.
 #
-# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,res540,fg,preset,diag] [--preset] [--keep-quality]
+# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,ab-known,res540,fg,preset,diag,hang] [--preset]
+#                           [--keep-quality]
 #                           [--race-secs N] [--dry-run]
 set -uo pipefail   # no -e: the script decides itself what stops it
 
@@ -46,6 +49,19 @@ APPIMAGE=""
 DRY=0
 QUALITY=low
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs mkw (tools/build/release.py APPRUN)
+# The switches the ab runs measure: run name, switch, what B is. Each must log 'in the B blocks ... (MKW_<NAME>' when
+# set to ab, or the pair is reported void.
+AB_PAIRS=(
+  "ab-sibling:MKW_SIBLING_HELPERS:B = vk completion and vk shadow on the replay core's idle processor"
+  "ab-early-dedup:MKW_EARLY_DEDUP:B = a submission's repeated early-read destinations listed once"
+  "ab-hot-keep:MKW_SHADOW_HOT_KEEP:B = a hot shadow pool written again stays hot"
+  "ab-queue-nocopy:MKW_QUEUE_NOCOPY:B = the queues' held work read in place, one copy instead of three"
+)
+AB_KNOWN=(
+  "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
+  "ab-known-queue-waits:MKW_QUEUE_WAITS:B = queue ordering on, the default; A = off, not shippable (#430)"
+  "ab-known-replay-core:MKW_REPLAY_CORE:B = replay thread alone on a core; the Deck profile's default"
+)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 die() { echo "$*" >&2; exit 1; }
@@ -179,10 +195,8 @@ f=$(ls /sys/class/drm/card*/device/pp_dpm_sclk 2>/dev/null | head -1)
 CARD=$([ -n "$f" ] && dirname "$f")
 HWMON=$([ -n "$CARD" ] && ls -d "$CARD"/hwmon/hwmon* 2>/dev/null | head -1)
 level=$([ -n "$CARD" ] && cat "$CARD/power_dpm_force_performance_level" 2>/dev/null)
-CLOCKS_OK=1
 if [ -n "$level" ] && [ "$level" != auto ]; then
-  CLOCKS_OK=0
-  echo "warning: the GPU clock level is '$level', not 'auto' (Steam's manual GPU clock?): ab-gpu-clocks is skipped"
+  echo "warning: the GPU clock level is '$level', not 'auto' (Steam's manual GPU clock?): MKW_GPU_CLOCKS holds nothing"
 fi
 pcap=$([ -n "$HWMON" ] && cat "$HWMON/power1_cap" 2>/dev/null)
 [ -n "$pcap" ] && [ "$pcap" -lt 15000000 ] && echo "warning: the APU power cap is $((pcap / 1000000)) W: Steam's TDP limit is on"
@@ -324,14 +338,9 @@ medians() {
     }' "$1"
 }
 
-ENGAGED_REPLAY_PAR='replay in chunks of .* in the B blocks'
-ENGAGED_QUEUE_WAITS='event waits in the B blocks'
-ENGAGED_GPU_CLOCKS='GPU clocks held at the peak stable pstate in the B blocks'
-ENGAGED_REPLAY_CORE='the replay thread alone on processor .* in the B blocks'
-
 report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med keeps the medians for the pair summary
   local LC_ALL=C   # awk prints '.', and bash's printf parses with the locale's decimal point (fr_FR: ',')
-  local name=$1 rc=$2 secs=$3 sw=${4:-} log="$OUT/$1.log" started fatal pat why x
+  local name=$1 rc=$2 secs=$3 sw=${4:-} log="$OUT/$1.log" started fatal why x
   medians "$log" > "$OUT/$name.med"
   started=$(grep -c 'seq: watch off at the start of' "$log" 2>/dev/null)
   fatal=$(grep -m1 -E 'FATAL|fatal signal|device lost|VK_ERROR_DEVICE_LOST|the GPU has not finished submission' "$log" 2>/dev/null)
@@ -339,8 +348,7 @@ report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med kee
     printf '%s: exit %s after %ss; race reached: %s\n' "$name" "$rc" "$secs" "$([ "${started:-0}" -gt 0 ] && echo yes || echo NO)"
     [ -n "$fatal" ] && printf '  FATAL: %s\n' "$fatal"
     if [ -n "$sw" ]; then   # the switch must say it acts in the B blocks, else the A/B compared A with A
-      pat="ENGAGED_${sw#MKW_}"
-      if ! grep -qE "${!pat}" "$log" || grep -q 'stable pstate .* was refused' "$log"; then
+      if ! grep -qE "in the B blocks.*\\(${sw}" "$log" || grep -q 'stable pstate .* was refused' "$log"; then
         why=$(grep -m1 -E "\(${sw}|vk: GPU clocks" "$log")
         printf '  A/B VOID: %s did not act in the B blocks (%s)\n' "$sw" "${why:-no line about it in the log}"
       fi
@@ -461,7 +469,7 @@ ab_pair() {   # NAME SWITCH LABEL: the switch at ab, a plain run and its inverte
 
 n=0
 want base && n=$((n + 1)); want own && n=$((n + 1)); want res540 && n=$((n + 1))
-want ab && n=$((n + 6)) && [ "$CLOCKS_OK" = 1 ] && n=$((n + 2))
+want ab && n=$((n + 2 * ${#AB_PAIRS[@]})); want ab-known && n=$((n + 2 * ${#AB_KNOWN[@]})); want hang && n=$((n + 6))
 want fg && n=$((n + 2)) && [ "$product" = Galileo ] && n=$((n + 1)); want preset && n=$((n + 4))
 want diag && n=$((n + 2))
 echo "mkw-recomp Deck bench: $n runs, about $((n * (RACE_SECS + 150 + COOL_SECS) / 60)) minutes; results in $OUT"
@@ -474,11 +482,18 @@ if want diag; then
   run diag-host -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_HOST_TIME=1
   run diag-crit -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE=perf,sched MKW_CRIT=w30-40 "MKW_CRIT_OUT=$OUT/crit.bin"
 fi
-if want ab; then
-  ab_pair ab-replay-par MKW_REPLAY_PAR "B = chunked recording on; Deck default off; at 0.5x game speed an upper bound"
-  ab_pair ab-queue-waits MKW_QUEUE_WAITS "B = queue ordering on, the default; A = off, not shippable (#430)"
-  [ "$CLOCKS_OK" = 1 ] && ab_pair ab-gpu-clocks MKW_GPU_CLOCKS "B = peak pstate held; Deck default: amdgpu chooses"
-  ab_pair ab-replay-core MKW_REPLAY_CORE "B = replay thread alone on a core; Deck default off"
+PAIRS=()
+want ab && PAIRS+=("${AB_PAIRS[@]}")
+want ab-known && PAIRS+=("${AB_KNOWN[@]}")
+for spec in "${PAIRS[@]}"; do   # name:switch:label
+  ab_pair "${spec%%:*}" "$(printf '%s' "$spec" | cut -d: -f2)" "$(printf '%s' "$spec" | cut -d: -f3-)"
+done
+if want hang; then
+  for i in 1 2; do
+    run "hang-switch-$i" MKW_GPU_CLOCKS -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_AB=2 MKW_GPU_CLOCKS=ab MKW_PSTATE_DRAIN=0 MKW_GPU_CRUMBS_DRAW=1
+    run "hang-drain-$i" MKW_GPU_CLOCKS -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_AB=2 MKW_GPU_CLOCKS=ab MKW_PSTATE_DRAIN=1 MKW_GPU_CRUMBS_DRAW=1
+    run "hang-peak-$i" -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_GPU_CLOCKS=peak MKW_GPU_CRUMBS_DRAW=1
+  done
 fi
 want res540 && run res540 -- "${PIN[@]}" "${QROWS[@]}" MKW_RESOLUTION=540 MKW_UPSCALER=fsr MKW_FPS=60 MKW_TRACE_TL=1
 if want fg; then
