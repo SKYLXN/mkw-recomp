@@ -310,8 +310,31 @@ void shadow_apply_run(PoolRec *r, uint64_t a, uint64_t b, const uint8_t *src) { 
 int hot_mode = -1;
 static uint64_t s_hot_syncs, s_hot_pages;   // gen_lock
 
+// MKW_SHADOW_HOT_KEEP (default 0; "ab" in the B blocks): a pool that goes hot keeps three of the writes that made it
+// hot (HOT_KEPT) instead of an empty history, so after its HOT_SYNCS the first normal sync that finds it written makes
+// it hot again. With the empty history a pool the CPU writes at every sync takes four protecting syncs to be hot again,
+// 4 of every 36: each protects its written pages again, so the game's next write to each one faults (userfaultfd's
+// write protection, resolved in the kernel) and the query flushes the TLB of the cores running the game, the render
+// thread's among them. In a Steam Deck race (deck2 ab-gpu-clocks-inv at frame 2940, 19/11/2026: 318.5 queries a frame
+// found 1,398 written pages, of them 271 hot syncs with 982 pages, 3.6 each) the cycles make ~34 of the ~47 protecting
+// syncs a frame that find writes and ~120 of the ~416 pages those protect again (base at frame 5700: ~28 of 36, ~107
+// of 340); with the switch ~9 and ~30. A model of those counts, not measured: with the switch set, a line beside the
+// hot pools' one counts the protecting syncs. The pages a hot sync copies are the same either way: those written since
+// the pool's last protecting sync. A pool that stops being written: the kept bits leave the 8-sync window within 7
+// syncs, then the 4-of-8 rule alone decides, as without the switch.
+#define HOT_KEPT 0x0e   // bits 1-3: the next sync shifts them to 2-4, and one write makes 4 of 8
+static int keep_mode = -1;                                  // gen_lock
+static uint64_t s_hot_begun, s_prot_syncs, s_prot_found;    // gen_lock, counted with MKW_SHADOW_HOT_KEEP set
+
 // gen_lock held: stamps the written pages of the pools, tracked[i] for each.
 void shadow_query_pools(PoolRec **rs, uint8_t *tracked, int n, int hot_on) {
+    if (hot_on && keep_mode < 0) {   // every caller holds gen_lock exclusively: one of them reads the switch
+        keep_mode = rt_knob("SHADOW_HOT_KEEP", "0");
+        if (keep_mode)
+            rt_log("mem: a hot shadow pool written again right after its hot syncs is hot again at once%s "
+                   "(MKW_SHADOW_HOT_KEEP)", keep_mode == 2 ? " in the B blocks" : "");
+    }
+    int keep = hot_on && keep_mode > 0 && RT_KNOB_ON(keep_mode);
     for (int i = 0; i < n; i++) {
         PoolRec *r = rs[i];
         uint64_t p0 = ww_pages;
@@ -323,8 +346,12 @@ void shadow_query_pools(PoolRec **rs, uint8_t *tracked, int n, int hot_on) {
             ww_peek = 0;
             continue;
         }
+        if (keep_mode > 0) s_prot_syncs++, s_prot_found += (uint64_t)found;
         r->shist = (uint8_t)(r->shist << 1 | found);
-        if (hot_on && __builtin_popcount(r->shist) >= 4) r->shot = HOT_SYNCS, r->shist = 0;
+        if (hot_on && __builtin_popcount(r->shist) >= 4) {
+            r->shot = HOT_SYNCS, r->shist = keep ? HOT_KEPT : 0;
+            if (keep_mode > 0) s_hot_begun++;
+        }
     }
 }
 
@@ -566,7 +593,11 @@ void shadow_log(uint64_t frame) {
         gen_lock_x();
         rt_log("mem: hot shadow pools since the last line: %llu syncs without protecting, %llu written pages copied",
                (unsigned long long)s_hot_syncs, (unsigned long long)s_hot_pages);
-        s_hot_syncs = s_hot_pages = 0;
+        if (keep_mode > 0)
+            rt_log("mem: MKW_SHADOW_HOT_KEEP since the last line: %llu protecting syncs, %llu of them finding writes, "
+                   "%llu hot periods begun", (unsigned long long)s_prot_syncs, (unsigned long long)s_prot_found,
+                   (unsigned long long)s_hot_begun);
+        s_hot_syncs = s_hot_pages = s_prot_syncs = s_prot_found = s_hot_begun = 0;
         plat_mutex_unlock(&gen_lock);
     }
     plat_mutex_unlock(&shadow_lock);

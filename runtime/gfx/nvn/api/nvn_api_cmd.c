@@ -539,8 +539,66 @@ NvnEarlyDst nvn_sub_dst[NVN_EARLY_MAX];
 int nvn_sub_ndst;
 static int early_watch;
 
+// MKW_EARLY_DEDUP (default 0; "ab" in the B blocks): a destination the submission being prepared has listed already,
+// the same address, size and kind, is not listed again. The front end records every bind (nvn_api_state.c), and the
+// game binds the same storage buffers draw after draw and stage after stage, so the list repeats ranges; each listing
+// costs the submitting game thread a frz_lock round and mem_early_watch's loop over up to 16 pages (a 64 KiB storage
+// buffer) under the submit lock, after the submit is queued and before nvnQueueSubmitCommands returns. A repeat changes nothing there: its pages already carry this
+// fence as their newest writer from the first listing, which also decided their watch (memory_early.c), so the
+// submission is watched as if each range were listed once. The list also fills later: today what a submission lists
+// past NVN_EARLY_MAX goes unwatched. Not measured yet: with the switch set, one line every 3,000 submits counts the
+// destinations listed, the repeats left out and those past NVN_EARLY_MAX. Direct-mapped: a repeat whose slot another
+// range took meanwhile is listed again, as without the switch.
+#define EARLY_SEEN 2048   // a power of two
+static struct { uint64_t addr, size; uint32_t sub; int32_t kind; } early_seen[EARLY_SEEN];
+static uint32_t early_sub;                        // the submission early_seen marks (0: a slot never used)
+static int early_dedup_mode = -1, early_dedup;    // the switch; on for the submission being prepared
+static uint64_t ed_subs, ed_on, ed_listed, ed_repeats, ed_over;   // since the last line (the front end's submit lock)
+
+// A submission starts its list (nvn_submit_prepare*, after early_watch is set).
+static void early_begin(void) {
+    early_dedup = 0;
+    if (!early_watch) return;
+    if (early_dedup_mode < 0) {
+        early_dedup_mode = rt_knob("EARLY_DEDUP", "0");
+        if (early_dedup_mode)
+            rt_log("nvn: a destination a submission lists again for MKW_EARLY_READ is listed once%s (MKW_EARLY_DEDUP)",
+                   early_dedup_mode == 2 ? " in the B blocks" : "");
+    }
+    if (!early_dedup_mode) return;
+    early_dedup = RT_KNOB_ON(early_dedup_mode) != 0;
+    if (early_dedup) {
+        ed_on++;
+        if (!++early_sub) early_sub = 1;
+    }
+    if (++ed_subs < 3000) return;
+    rt_log("nvn: MKW_EARLY_DEDUP over the last %llu submits, %llu with it on: %llu early-read destinations listed, "
+           "%llu repeats left out, %llu past the %d a submit holds", (unsigned long long)ed_subs,
+           (unsigned long long)ed_on, (unsigned long long)ed_listed, (unsigned long long)ed_repeats,
+           (unsigned long long)ed_over, NVN_EARLY_MAX);
+    ed_subs = ed_on = ed_listed = ed_repeats = ed_over = 0;
+}
+
+static int early_repeat(uint64_t a, uint64_t n, int kind) {
+    uint64_t h = ((a >> 4) ^ (n * 0x9E3779B97F4A7C15ull) ^ (uint64_t)(uint32_t)kind) * 0x9E3779B97F4A7C15ull;
+    unsigned i = (unsigned)(h >> 53) & (EARLY_SEEN - 1);
+    if (early_seen[i].sub == early_sub && early_seen[i].addr == a && early_seen[i].size == n &&
+        early_seen[i].kind == kind) {
+        ed_repeats++;
+        return 1;
+    }
+    early_seen[i].addr = a, early_seen[i].size = n, early_seen[i].sub = early_sub, early_seen[i].kind = kind;
+    return 0;
+}
+
 static void early_note(uint64_t a, uint64_t n, int kind) {
-    if (!a || !n || nvn_sub_ndst == NVN_EARLY_MAX || nvn_gpu_only(a)) return;
+    if (!a || !n || nvn_gpu_only(a)) return;
+    if (nvn_sub_ndst == NVN_EARLY_MAX) {
+        if (early_dedup) ed_over++;
+        return;
+    }
+    if (early_dedup && early_repeat(a, n, kind)) return;
+    if (early_dedup) ed_listed++;
     nvn_sub_dst[nvn_sub_ndst++] = (NvnEarlyDst){a, n, kind};
 }
 
@@ -638,6 +696,7 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the defe
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     nvn_sub_sp_reports = nvn_sub_reports = nvn_sub_events = nvn_sub_waits = 0;
     nvn_sub_ndst = 0, early_watch = mem_early_on();
+    early_begin();
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
     for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
     for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
@@ -648,6 +707,7 @@ void nvn_submit_prepare(const uint64_t *handles, int n) {
 void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
     nvn_sub_sp_reports = nvn_sub_reports = nvn_sub_events = nvn_sub_waits = 0;
     nvn_sub_ndst = 0, early_watch = mem_early_on();
+    early_begin();
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
     uint64_t replayed = gfx_replayed_submits();
     plat_mutex_lock(&copy_lock);
