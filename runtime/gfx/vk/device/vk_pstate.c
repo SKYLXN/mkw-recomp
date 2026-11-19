@@ -32,6 +32,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "vk.h"
 
 #if defined(__linux__)
@@ -177,8 +178,54 @@ void vk_pstate_init(VkPhysicalDevice phys) {
                S.mode < 0 ? " in the B blocks" : "");
 }
 
+static const char *pstate_name(int p) {
+    return p == PSTATE_PEAK ? "peak" : p == PSTATE_STANDARD ? "standard" : "none (amdgpu chooses)";
+}
+
+// "ab" switches at the replay thread's present, with the GPU most often still running the replay's work. Each switch
+// is logged with the frame it opens (the frame the breadcrumbs name) and the submissions still on the GPU, to line a
+// hang up with it.
+// MKW_PSTATE_DRAIN (default 0; 1 on): the switch waits first until the GPU has finished the replay's submissions (100 ms
+// at most; else the next present tries again, 8 times at most), so the change of level does not land in our work.
+// Why: a Steam Deck OLED (Van Gogh, RADV, SteamOS 3.9.5, kernel 7.2.7; deck_bench ab-gpu-clocks-inv, 19/11/2026) hung
+// in a 1024x1024 depth-only shadow pass of frame 2978 (its start mark written, its end never; amdgpu reset the job)
+// in the same 2 s as the switch to the peak at world 36 s: the sampler saw the shader clock go 200 -> 1300 MHz and the
+// CPU 50 -> 10 % busy between 21:35:19 and 21:35:21, and by the world clock the switch came at the present opening
+// frame ~2980. That day: 16 switches mid-race in 4 runs, one hang, at a switch; none in 20 runs without them.
+// drm/amd#2545 (closed 06/2023) froze a Van Gogh switching profile_peak and auto, by this context op too. Entering or
+// leaving a stable pstate ungates or gates the GFX clocks and power (amdgpu_dpm_force_performance_level) and has the
+// SMU force the GFX, fabric and SoC clocks (vangogh_set_performance_level) while the GPU runs. Off by default: whether
+// the drain avoids the hang is not measured (MKW_AB=2 switches every few seconds). MKW_GPU_CLOCKS=peak, the Deck
+// profile's, switches once, at the device's creation, before any work of ours.
 void vk_pstate_frame(void) {
-    if (S.mode < 0 && S.ctx) apply(rt_ab() ? PSTATE_PEAK : PSTATE_NONE);
+    if (S.mode >= 0 || !S.ctx) return;
+    int want = rt_ab() ? PSTATE_PEAK : PSTATE_NONE;
+    if (want == S.set) return;
+    static int drain = -1, tries, logged;   // the replay thread only
+    if (drain < 0) {
+        drain = rt_knob("PSTATE_DRAIN", "0") != 0;
+        if (drain) rt_log("vk: GPU clocks: a switch of the stable pstate waits for the GPU to finish the replay's work "
+                          "(MKW_PSTATE_DRAIN)");
+    }
+    uint64_t issued = vk_sync_issued(), t0 = kern_now_ns();
+    double waited_ms = -1.0;
+    if (drain && vk_sync_fence_done() < issued) {
+        int idle = vk_sync_fence_wait(issued, 100000000ull);
+        waited_ms = (double)(kern_now_ns() - t0) / 1e6;
+        if (!idle && ++tries < 8) return;
+    }
+    tries = 0;
+    uint64_t done = vk_sync_fence_done();
+    int was = S.set;
+    apply(want);
+    if (S.set != want || logged >= 256) return;   // refused (apply said so), or lines enough
+    logged++;
+    char how[64] = "";
+    if (waited_ms >= 0) snprintf(how, sizeof how, " after a %.1f ms wait (MKW_PSTATE_DRAIN)", waited_ms);
+    rt_log("vk: GPU clocks: stable pstate %s -> %s at the present opening frame %llu (world %.1f s), %llu replay "
+           "submissions still on the GPU%s", pstate_name(was), pstate_name(want),
+           (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1,
+           (double)frame_step_world_us() / 1e6, (unsigned long long)(issued > done ? issued - done : 0), how);
 }
 #else
 void vk_pstate_init(VkPhysicalDevice phys) { (void)phys; }
