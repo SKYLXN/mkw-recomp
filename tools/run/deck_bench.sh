@@ -20,6 +20,10 @@
 #   res540          the scene at 540 lines with FSR 1 to the screen, at MKW_FPS=60: the GPU's share at a lower load
 #   fg-off, fg-2    MKW_FPS=30 with frame generation off, then 2x (60 shown); fg-3 (90 shown) too on an OLED
 #   preset-*        only with --preset: quality Low against Console in the order L C C L, at MKW_FPS=60
+#   diag-host       only with --only diag: MKW_HOST_TIME, the time each runtime call takes on the game's threads (the
+#                   render thread's share of the frame that is ours, not the game's), census of the race window
+#   diag-crit       only with --only diag: MKW_CRIT over 10 s of race with MKW_TRACE=sched, for tools/run/crit_path.py
+#                   (which thread and state holds each frame: running, waiting for a core, a host call, a wake)
 # All runs but own use the Low quality rows (the preset of every published Deck number) and pin the display rows
 # (720 lines, no frame generation, no mods, no overlay); --keep-quality keeps the player's quality and display rows.
 #
@@ -29,7 +33,7 @@
 # (tools/run/README.md, race.sh). No root, repository or Python. Results: ~/mkw-bench/<date>/ (a log per run,
 # samples.csv, report.txt, sysinfo.txt) and a .tar.gz of it, read on a PC with tools/run/ab.py, summary.py, gpucmp.py.
 #
-# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,res540,fg,preset] [--preset] [--keep-quality]
+# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,res540,fg,preset,diag] [--preset] [--keep-quality]
 #                           [--race-secs N] [--dry-run]
 set -uo pipefail   # no -e: the script decides itself what stops it
 
@@ -330,7 +334,7 @@ report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med kee
   local name=$1 rc=$2 secs=$3 sw=${4:-} log="$OUT/$1.log" started fatal pat why x
   medians "$log" > "$OUT/$name.med"
   started=$(grep -c 'seq: watch off at the start of' "$log" 2>/dev/null)
-  fatal=$(grep -m1 -E 'FATAL|fatal signal|device lost|VK_ERROR_DEVICE_LOST' "$log" 2>/dev/null)
+  fatal=$(grep -m1 -E 'FATAL|fatal signal|device lost|VK_ERROR_DEVICE_LOST|the GPU has not finished submission' "$log" 2>/dev/null)
   {
     printf '%s: exit %s after %ss; race reached: %s\n' "$name" "$rc" "$secs" "$([ "${started:-0}" -gt 0 ] && echo yes || echo NO)"
     [ -n "$fatal" ] && printf '  FATAL: %s\n' "$fatal"
@@ -354,6 +358,9 @@ report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med kee
       esac
     done < "$OUT/$name.med"
     case "$name" in
+      diag-host) awk '/^\[host\] host time: /{on = 1} on && n++ < 14' "$log" | sed 's/^\[host\] /  /' ;;
+      diag-crit) [ -s "$OUT/crit.bin" ] && echo "  crit.bin written ($(du -k "$OUT/crit.bin" | cut -f1) KiB): tools/run/crit_path.py reads it" \
+                   || echo "  no crit.bin: $(grep -m1 'crit: ' "$log")" ;;
       fg-off) ;;
       fg-*) x=$(grep 'vk: frame generation [0-9]x:' "$log" | tail -1)
             [ -n "$x" ] && printf '  %s\n' "${x#*vk: }" || \
@@ -456,12 +463,17 @@ n=0
 want base && n=$((n + 1)); want own && n=$((n + 1)); want res540 && n=$((n + 1))
 want ab && n=$((n + 6)) && [ "$CLOCKS_OK" = 1 ] && n=$((n + 2))
 want fg && n=$((n + 2)) && [ "$product" = Galileo ] && n=$((n + 1)); want preset && n=$((n + 4))
+want diag && n=$((n + 2))
 echo "mkw-recomp Deck bench: $n runs, about $((n * (RACE_SECS + 150 + COOL_SECS) / 60)) minutes; results in $OUT"
 echo "Leave the Deck plugged in and do not touch it until it says done (Ctrl-C stops it and keeps what was measured)."
 [ "$DRY" = 1 ] || { sampler > "$OUT/samples.csv" 2>/dev/null & SAMPLER_PID=$!; }
 
 want base && run base -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1
 want own && run own --
+if want diag; then
+  run diag-host -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_HOST_TIME=1
+  run diag-crit -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE=perf,sched MKW_CRIT=w30-40 "MKW_CRIT_OUT=$OUT/crit.bin"
+fi
 if want ab; then
   ab_pair ab-replay-par MKW_REPLAY_PAR "B = chunked recording on; Deck default off; at 0.5x game speed an upper bound"
   ab_pair ab-queue-waits MKW_QUEUE_WAITS "B = queue ordering on, the default; A = off, not shippable (#430)"
