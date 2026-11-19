@@ -95,6 +95,10 @@ void nvn_event_cpu_signal(volatile uint32_t *val);   // nvnEventSignal: nvn_qord
 int nvn_qorder_submit(const void *queue, const uint64_t *handles, int n, void **fe);
 void nvn_qorder_attach(void *fe, void *slot);
 uint64_t nvn_stream_handle(const uint8_t *ops, size_t n);   // nvn_api_cmd.c: a replay-only recording of these ops
+// The same without a copy (MKW_QUEUE_NOCOPY): block is malloc'd, its n bytes of ops written at block +
+// nvn_stream_head() with 8 bytes of room after them; it becomes the recording and is freed with it, as the copy is.
+size_t nvn_stream_head(void);
+uint64_t nvn_stream_adopt(void *block, size_t n);
 typedef struct { uint64_t type, addr; } p_report_counter;  // OP_REPORT_COUNTER: NVNcounterType, NVNcounterData address
 typedef struct { uint64_t type; } p_reset_counter;         // OP_RESET_COUNTER
 typedef struct { uint64_t src, dst, size; } p_copy_b2b;    // OP_COPY_B2B: GPU addresses

@@ -702,6 +702,22 @@ uint64_t nvn_stream_handle(const uint8_t *ops, size_t n) {
     return (uintptr_t)p;
 }
 
+// The same, written where the recording goes (nvn_qorder.c MKW_QUEUE_NOCOPY): the prefix and OP_BEGIN before the ops,
+// OP_END after them, and no copy.
+size_t nvn_stream_head(void) { return sizeof(copy_prefix) + 8; }
+
+uint64_t nvn_stream_adopt(void *block, size_t n) {
+    copy_prefix *pf = block;
+    uint8_t *p = (uint8_t *)(pf + 1);
+    put_hdr(p, OP_BEGIN, 8);
+    put_hdr(p + 8 + n, OP_END, 8);
+    plat_mutex_lock(&copy_lock);
+    *pf = (copy_prefix){0, n + 16, nsubmits, nsubmits, 1};
+    zombie_add(pf);
+    plat_mutex_unlock(&copy_lock);
+    return (uintptr_t)p;
+}
+
 const char *nvn_op_name(uint32_t op) {
     static const char *const names[] = {
         "END", "JUMP", "BEGIN", "CALL", "SIGNAL_EVENT", "REPORT_COUNTER", "COPY_B2B", "UPDATE_UB", "SET_RT",
