@@ -16,6 +16,9 @@
 #                   (all off by default in the build, so A is today's behaviour)
 #   ab-known-*      only with --only ab-known: the pairs already measured twice on a Deck (MKW_REPLAY_PAR, MKW_QUEUE_WAITS,
 #                   MKW_REPLAY_CORE), to check them again on a new build
+#   dc-*            only with --only dc: MKW_DRAW_CACHE=0 and 1 in the order 0 1 1 0 (read once at start, so separate
+#                   runs): descriptor sets kept across frames by their contents, 'left for slower CPUs' (roadmap) and never
+#                   measured on a Deck; it hung once in four runs on an RX 9070 XT (#592)
 #   hang-*          only with --only hang: whether a stable pstate switch mid-race hangs a Steam Deck (one did, 19/11/2026):
 #                   MKW_GPU_CLOCKS=ab every 2 s without and with MKW_PSTATE_DRAIN, and the peak held from the start, two
 #                   runs each, with per-draw breadcrumbs (MKW_GPU_CRUMBS_DRAW). A hang resets the GPU: only on purpose
@@ -35,7 +38,7 @@
 # (tools/run/README.md, race.sh). No root, repository or Python. Results: ~/mkw-bench/<date>/ (a log per run,
 # samples.csv, report.txt, sysinfo.txt) and a .tar.gz of it, read on a PC with tools/run/ab.py, summary.py, gpucmp.py.
 #
-# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,ab-known,res540,fg,preset,diag,hang] [--preset]
+# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,ab-known,res540,fg,preset,diag,dc,hang] [--preset]
 #                           [--keep-quality]
 #                           [--race-secs N] [--dry-run]
 set -uo pipefail   # no -e: the script decides itself what stops it
@@ -469,9 +472,9 @@ ab_pair() {   # NAME SWITCH LABEL: the switch at ab, a plain run and its inverte
   [ "$DRY" = 1 ] || pair_summary "$1" "$3"
 }
 
-n=0
+n=0 dcn=0
 want base && n=$((n + 1)); want own && n=$((n + 1)); want res540 && n=$((n + 1))
-want ab && n=$((n + 2 * ${#AB_PAIRS[@]})); want ab-known && n=$((n + 2 * ${#AB_KNOWN[@]})); want hang && n=$((n + 6))
+want ab && n=$((n + 2 * ${#AB_PAIRS[@]})); want ab-known && n=$((n + 2 * ${#AB_KNOWN[@]})); want hang && n=$((n + 6)); want dc && n=$((n + 4))
 want fg && n=$((n + 2)) && [ "$product" = Galileo ] && n=$((n + 1)); want preset && n=$((n + 4))
 want diag && n=$((n + 2))
 echo "mkw-recomp Deck bench: $n runs, about $((n * (RACE_SECS + 150 + COOL_SECS) / 60)) minutes; results in $OUT"
@@ -490,6 +493,9 @@ want ab-known && PAIRS+=("${AB_KNOWN[@]}")
 for spec in "${PAIRS[@]}"; do   # name:switch:label
   ab_pair "${spec%%:*}" "$(printf '%s' "$spec" | cut -d: -f2)" "$(printf '%s' "$spec" | cut -d: -f3-)"
 done
+if want dc; then
+  for v in 0 1 1 0; do run "dc-$v-$((++dcn))" -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_DRAW_CACHE=$v"; done
+fi
 if want hang; then
   for i in 1 2; do
     run "hang-switch-$i" MKW_GPU_CLOCKS -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_AB=2 MKW_GPU_CLOCKS=ab MKW_PSTATE_DRAIN=0 MKW_GPU_CRUMBS_DRAW=1
