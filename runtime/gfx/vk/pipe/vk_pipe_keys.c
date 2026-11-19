@@ -401,8 +401,16 @@ static void job_lower(Job *j) {
 
 #define LIB_HELPERS 4   // lib_wait's helper threads at once; beyond them a draw waits for a worker
 
+// A helper is started by the thread whose draw waits, the replay thread, and on Linux a thread starts on its creator's
+// processors: with MKW_REPLAY_CORE on (6+ cores with SMT, the Steam Deck's profile) that is the replay's one processor,
+// so the build took it from the recording that waits for it, as "vk submit" and "vk present" did before
+// MKW_SUBMIT_APART (vk_backend.c). As background work it runs on every processor (MKW_LIB_HELPER_BG, default 1; 0 the
+// old placement).
 static void lib_helper(void *arg) {
     LibJob *j = arg;
+    static int bg = -1;
+    if (bg < 0) bg = rt_knob("LIB_HELPER_BG", "1");
+    if (bg) plat_thread_background();
     plat_mutex_lock(&P.lock);
     lib_build(j->b, j->kind, &j->s, &j->k, j->l);
     U.helpers--;
