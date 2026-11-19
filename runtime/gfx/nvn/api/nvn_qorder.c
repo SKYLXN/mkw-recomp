@@ -20,6 +20,25 @@
 // view, so every view drew with the last view's culling (a parked player 1 lost the crowd the far player 2 no longer
 // saw: i430-def against i430-qw, GTX 1050 Ti, 13.8 against 14.8 fps). Off before for +3.1 ms a frame on a Radeon 660M
 // (qw2j); the black cacti it seemed to add were a translator atomic, fixed in 9129803.
+//
+// MKW_QUEUE_NOCOPY (default 0: as above, exactly; "ab": in the B blocks; decided when an episode begins). A 1-player
+// race on a Steam Deck OLED (v0.1.15, Grand Prix at MKW_FPS=60, 720p, 19/11/2026) is one episode a frame: the compute
+// queue's submission waits for the main queue's next one, both are held, and the ordering costs +2.1 to +4.2 ms a frame
+// (in-run A/B and its inverted twin). The stream holds 1.1-1.9 MiB of ops (375 episodes, 750 held, 400-700 MiB per
+// 1,500 submits), and those bytes were copied up to three times on the game thread, most of it at the main queue's
+// submit that closes the episode, while the replay waited on the compute queue's held submission (it found it still
+// empty in all 762 episodes to frame 3600, 2.2 ms each on average): into a piece malloc'd per held submission, into the
+// stream, into the recording made at the close. With the switch, a held submission's ops are read where its recording
+// copy holds them: the copy lives until the replay is past that submission's number (nvn_api_cmd.c zombies), the
+// replay cannot pass the episode's first held submission before the episode closes, and a copy submitted again
+// meanwhile with deferred binds is cloned (nvn_submit_prepare_async). And the stream is written where its recording
+// goes (nvn_stream_adopt) and handed over as it is. One copy of the ops instead of up to three, and no piece malloc'd
+// per held submission; the same recordings.
+// The 1,500-submit line also gives the MiB decided as their episode began (what a replay handed the stream in pieces
+// could record while it waits) and the MiB after the first held submission's work (what giving each held submission
+// its own part of the stream would let complete at a later fence). Neither is done: they need the replay to keep the
+// queues' states from one submission to the next and parts kept alive past the first one's replay.
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,9 +52,12 @@
 #define RUNS_MAX 4
 #define SLOTS_MAX 64
 
-typedef struct Piece { struct Piece *next; size_t n; uint8_t ops[]; } Piece;   // a held submission's ops, flat
-typedef struct { const void *queue; Piece *head, *tail; size_t pos; } Run;      // pos: head's wait not met
-typedef struct { void *slot; int attached, decided; uint64_t h; } FeSlot;       // h 0: empty
+// A held submission's ops not yet in the stream: copied flat into ops[], or (MKW_QUEUE_NOCOPY) a span of the recording
+// copy its handle points at. slot: its submission's index in the episode.
+typedef struct Piece { struct Piece *next; const uint8_t *p, *end; int slot, pad; uint8_t ops[]; } Piece;
+_Static_assert(offsetof(Piece, ops) % 8 == 0, "copied records stay 8-byte aligned");
+typedef struct { const void *queue; Piece *head, *tail; const uint8_t *at; } Run;   // at: in head, its wait not met
+typedef struct { void *slot; int attached, decided; uint64_t h; } FeSlot;          // h 0: empty
 typedef struct { const uint8_t *p, *end; } Span;
 
 static PlatMutex qo = PLAT_MUTEX_INIT;
@@ -44,8 +66,12 @@ static Run runs[RUNS_MAX];
 static int nruns;
 static FeSlot *slots[SLOTS_MAX];
 static int nslots;
-static struct { uint8_t *b; size_t n, cap; const void *queue; } out;   // the episode's stream
-static uint64_t st_waits, st_unmet, st_episodes, st_held, st_forced, st_cpu, st_bytes;
+// The episode's stream: its n bytes of ops at b + head, room for an OP_END after them (b + head is where a recording's
+// ops go, so MKW_QUEUE_NOCOPY can hand the block itself over); hint: the size a new block starts at.
+static struct { uint8_t *b; size_t n, cap, head, hint; const void *queue; } out;
+static size_t first_end;   // where the episode's first held submission's work ends in the stream (the census line)
+static int ep_nocopy;      // the open episode's MKW_QUEUE_NOCOPY
+static uint64_t st_waits, st_unmet, st_episodes, st_held, st_forced, st_cpu, st_bytes, st_open, st_past;
 
 static int mode(void) {
     static int m = -1;
@@ -53,6 +79,16 @@ static int mode(void) {
         m = rt_knob("QUEUE_WAITS", "1");
         rt_log("nvn: the queues' work ordered by their event waits%s (MKW_QUEUE_WAITS)",
                !m ? ": off, a census only" : m == 2 ? " in the B blocks" : "");
+    }
+    return m;
+}
+
+static int nocopy_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        m = rt_knob("QUEUE_NOCOPY", "0");
+        rt_log("nvn: the queues' held work read in its recordings and their stream built in place, without copies%s "
+               "(MKW_QUEUE_NOCOPY)", !m ? ": off" : m == 2 ? " in the B blocks" : "");
     }
     return m;
 }
@@ -103,15 +139,19 @@ static Span handle_ops(uint64_t handle) {   // a recording's ops between its OP_
 }
 
 static void out_put(const void *src, size_t n) {
-    if (out.n + n > out.cap) {
-        out.cap = (out.n + n) * 2 > 65536 ? (out.n + n) * 2 : 65536;
-        if (!(out.b = realloc(out.b, out.cap))) rt_fatal("nvn: out of memory (queue order stream)");
+    if (!out.head) out.head = nvn_stream_head();
+    if (out.head + out.n + n + 8 > out.cap) {   // (8: the OP_END of a block handed over as a recording)
+        size_t want = out.head + out.n + n + 8, cap = want * 2 > 65536 ? want * 2 : 65536;
+        // A new block per episode (MKW_QUEUE_NOCOPY): the size of the recent streams, not grown there by doubling.
+        if (!out.b && out.head + out.hint + out.hint / 8 + 8 > cap) cap = out.head + out.hint + out.hint / 8 + 8;
+        if (!(out.b = realloc(out.b, cap))) rt_fatal("nvn: out of memory (queue order stream)");
+        out.cap = cap;
     }
-    memcpy(out.b + out.n, src, n);
+    memcpy(out.b + out.head + out.n, src, n);
     out.n += n, st_bytes += n;
 }
 
-static void out_ops(const void *queue, const uint8_t *p, const uint8_t *end) {   // the queue's ops [p, end)
+static void out_ops(const void *queue, const uint8_t *p, const uint8_t *end, int slot) {   // the queue's ops [p, end)
     if (p == end) return;
     if (queue != out.queue) {
         struct { op_hdr h; p_queue q; } m = {{OP_QUEUE, sizeof m}, {(uintptr_t)queue}};
@@ -119,18 +159,27 @@ static void out_ops(const void *queue, const uint8_t *p, const uint8_t *end) {  
         out.queue = queue;
     }
     out_put(p, (size_t)(end - p));
+    if (!slot) first_end = out.n;
 }
 
-static Piece *piece_new(size_t n) {
+static Piece *piece_new(size_t n, int slot) {   // a held submission's ops, copied in by piece_add
     Piece *pc = malloc(sizeof *pc + n);
     if (!pc) rt_fatal("nvn: out of memory (held submission, %zu bytes)", n);
-    pc->next = NULL, pc->n = 0;
+    pc->next = NULL, pc->p = pc->end = pc->ops, pc->slot = slot;
     return pc;
 }
 
 static void piece_add(Piece *pc, const uint8_t *p, const uint8_t *end) {
-    memcpy(pc->ops + pc->n, p, (size_t)(end - p));
-    pc->n += (size_t)(end - p);
+    size_t at = (size_t)(pc->end - pc->p);
+    memcpy(pc->ops + at, p, (size_t)(end - p));
+    pc->end = pc->ops + at + (size_t)(end - p);
+}
+
+static Piece *piece_span(const uint8_t *p, const uint8_t *end, int slot) {   // MKW_QUEUE_NOCOPY: left where they are
+    Piece *pc = malloc(sizeof *pc);
+    if (!pc) rt_fatal("nvn: out of memory (held submission)");
+    pc->next = NULL, pc->p = p, pc->end = end, pc->slot = slot;
+    return pc;
 }
 
 static void run_push(Run *r, Piece *pc) {
@@ -145,26 +194,55 @@ static Run *run_of(const void *queue) {
     return NULL;
 }
 
+// The ops of handles [0, n) of a held submission (slot), behind its queue's held work.
+static void run_append(Run *r, const uint64_t *handles, int n, int slot) {
+    if (ep_nocopy) {
+        for (int i = 0; i < n; i++) {
+            Span s = handle_ops(handles[i]);
+            if (s.p != s.end) run_push(r, piece_span(s.p, s.end, slot));
+        }
+        return;
+    }
+    size_t bytes = 0;
+    for (int i = 0; i < n; i++) {
+        Span s = handle_ops(handles[i]);
+        bytes += (size_t)(s.end - s.p);
+    }
+    Piece *pc = piece_new(bytes, slot);
+    for (int i = 0; i < n; i++) {
+        Span s = handle_ops(handles[i]);
+        piece_add(pc, s.p, s.end);
+    }
+    run_push(r, pc);
+}
+
 // A submission of a queue that has no held work: its ops go into the stream as far as its waits allow; the rest is
 // held in a new run. Only signals reach the events (follow), so handles before the stop are complete.
-static void run_new_submission(const void *queue, const uint64_t *handles, int n) {
+static void run_new_submission(const void *queue, const uint64_t *handles, int n, int slot) {
     for (int i = 0; i < n; i++) {
         Span s = handle_ops(handles[i]);
         const uint8_t *stop = follow(s.p, s.end, 1);
-        out_ops(queue, s.p, stop);
+        out_ops(queue, s.p, stop, slot);
         if (stop == s.end) continue;
+        Run *r = &runs[nruns++];
+        if (ep_nocopy) {
+            Piece *pc = piece_span(stop, s.end, slot);
+            *r = (Run){queue, pc, pc, stop};
+            run_append(r, handles + i + 1, n - i - 1, slot);
+            return;
+        }
         size_t bytes = (size_t)(s.end - stop);
         for (int j = i + 1; j < n; j++) {
             Span t = handle_ops(handles[j]);
             bytes += (size_t)(t.end - t.p);
         }
-        Piece *pc = piece_new(bytes);
+        Piece *pc = piece_new(bytes, slot);
         piece_add(pc, stop, s.end);
         for (int j = i + 1; j < n; j++) {
             Span t = handle_ops(handles[j]);
             piece_add(pc, t.p, t.end);
         }
-        runs[nruns++] = (Run){queue, pc, pc, 0};
+        *r = (Run){queue, pc, pc, pc->p};
         return;
     }
 }
@@ -172,16 +250,17 @@ static void run_new_submission(const void *queue, const uint64_t *handles, int n
 // A run goes on from its wait (past it: met now, or forced) as far as its waits allow; 0 when it has no work left.
 static int run_resume(Run *r) {
     Piece *pc = r->head;
-    const uint8_t *p = pc->ops + r->pos;
+    const uint8_t *p = r->at;
     p += op_at(p)->size, st_waits++;
+    if (!pc->slot) first_end = out.n;   // (its wait let go after what the stream holds now)
     for (;;) {
-        const uint8_t *end = pc->ops + pc->n, *stop = follow(p, end, 1);
-        out_ops(r->queue, p, stop);
-        if (stop != end) return r->pos = (size_t)(stop - pc->ops), 1;
+        const uint8_t *stop = follow(p, pc->end, 1);
+        out_ops(r->queue, p, stop, pc->slot);
+        if (stop != pc->end) return r->at = stop, 1;
         r->head = pc->next;
         free(pc);
         if (!(pc = r->head)) return r->tail = NULL, 0;
-        p = pc->ops;
+        p = pc->p;
     }
 }
 
@@ -194,7 +273,7 @@ static void schedule(void) {
     for (int moved = 1; moved;) {
         moved = 0;
         for (int i = 0; i < nruns; i++)
-            if (wait_met(nvn_op_payload(op_at(runs[i].head->ops + runs[i].pos)))) {
+            if (wait_met(nvn_op_payload(op_at(runs[i].at)))) {
                 if (!run_resume(&runs[i])) run_drop(i);
                 moved = 1;
                 break;
@@ -207,9 +286,18 @@ static void fill(FeSlot *s) {   // its content decided and its back-end slot kno
     free(s);
 }
 
-// No queue waits: the first held submission gets the stream, the others nothing.
+// No queue waits: the first held submission gets the stream, the others nothing. MKW_QUEUE_NOCOPY: the block is the
+// recording; the next episode takes a new one, sized from the recent streams.
 static void close_episode(void) {
-    uint64_t h = out.n ? nvn_stream_handle(out.b, out.n) : 0;
+    uint64_t h = 0;
+    st_past += out.n - first_end;
+    if (out.n && ep_nocopy) {
+        h = nvn_stream_adopt(out.b, out.n);
+        out.hint = out.n > out.hint ? out.n : out.hint - out.hint / 16;
+        out.b = NULL, out.cap = 0;
+    } else if (out.n) {
+        h = nvn_stream_handle(out.b + out.head, out.n);
+    }
     for (int i = 0; i < nslots; i++) {
         FeSlot *s = slots[i];
         s->decided = 1, s->h = i ? 0 : h;
@@ -242,14 +330,15 @@ static void log_line(void) {
     if (++subs % 1500) return;
     rt_log("nvn: queue order in the last 1500 submits: %llu event waits, %llu not met in submit order (the census, "
            "MKW_QUEUE_WAITS=0); %llu episodes, %llu submissions held, %llu waits let go, %llu queues let on by the CPU, "
-           "%.1f MiB of ops ordered", (unsigned long long)st_waits, (unsigned long long)st_unmet,
+           "%.1f MiB of ops ordered; of them %.1f MiB decided as their episode began, %.1f MiB after the first held "
+           "submission's work", (unsigned long long)st_waits, (unsigned long long)st_unmet,
            (unsigned long long)st_episodes, (unsigned long long)st_held, (unsigned long long)st_forced,
-           (unsigned long long)st_cpu, st_bytes / 1048576.0);
-    st_waits = st_unmet = st_episodes = st_held = st_forced = st_cpu = st_bytes = 0;
+           (unsigned long long)st_cpu, st_bytes / 1048576.0, st_open / 1048576.0, st_past / 1048576.0);
+    st_waits = st_unmet = st_episodes = st_held = st_forced = st_cpu = st_bytes = st_open = st_past = 0;
 }
 
 int nvn_qorder_submit(const void *queue, const uint64_t *handles, int n, void **fe) {
-    int m = mode(), held = 0;
+    int m = mode(), nc = nocopy_mode(), held = 0;
     plat_mutex_lock(&qo);
     log_line();
     if (!RT_KNOB_ON(m)) {
@@ -267,29 +356,20 @@ int nvn_qorder_submit(const void *queue, const uint64_t *handles, int n, void **
             }
     } else {
         if (nslots == SLOTS_MAX || (!run_of(queue) && nruns == RUNS_MAX)) force();
-        int was_open = nslots > 0;
+        int was_open = nslots > 0, k = nslots;   // k: this submission's index in the episode if it is held
+        if (!was_open) ep_nocopy = RT_KNOB_ON(nc), first_end = 0;
         Run *r = run_of(queue);
         if (r) {   // (behind its queue's held work)
-            size_t bytes = 0;
-            for (int i = 0; i < n; i++) {
-                Span s = handle_ops(handles[i]);
-                bytes += (size_t)(s.end - s.p);
-            }
-            Piece *pc = piece_new(bytes);
-            for (int i = 0; i < n; i++) {
-                Span s = handle_ops(handles[i]);
-                piece_add(pc, s.p, s.end);
-            }
-            run_push(r, pc);
+            run_append(r, handles, n, k);
         } else {
             size_t at = out.n;
-            run_new_submission(queue, handles, n);
+            run_new_submission(queue, handles, n, k);
             schedule();
             if (!was_open && !nruns) st_bytes -= out.n - at, out.n = at, out.queue = NULL;   // (nothing waited: as it is)
         }
         held = was_open || nruns;
         if (held) {
-            if (!was_open) st_episodes++;
+            if (!was_open) st_episodes++, st_open += out.n;
             st_held++;
             FeSlot *s = calloc(1, sizeof *s);
             if (!s) rt_fatal("nvn: out of memory (held submission)");
