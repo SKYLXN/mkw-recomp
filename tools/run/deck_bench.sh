@@ -80,6 +80,8 @@ done
 case "$RACE_SECS" in ''|*[!0-9]*) die "--race-secs must be a whole number of seconds" ;; esac
 want() { case ",$ONLY," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
+# As root (sudo) HOME is /root, where the game was never installed: the player's own user runs it
+[ "$(id -u)" = 0 ] && die "run this script as your own user, without sudo (as root it looks for the game in $HOME)"
 pgrep -x mkw >/dev/null 2>&1 && die "mkw-recomp is already running: close it first"
 [ -x "$DATA/mkw" ] || die "no $DATA/mkw: start the game once from its AppImage first"
 
