@@ -50,7 +50,10 @@ GEN_ARCH_FLAGS = {"x86_64": [], "aarch64": ["-ffixed-x18"]}
 HOST_ARCH = {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(),
                                                                           platform.machine().lower())  # fmt: skip
 ARCH = HOST_ARCH if HOST_ARCH in ARCH_FLAGS else "x86_64"
-GEN_FLAGS = ["-O1", "-fno-strict-aliasing", "-Wno-return-type", "-Wno-unused-label", "-fvisibility=hidden",
+# -O2 (a test build for the Steam Deck, deck-o2): on a Deck the 1-player race frame's critical path (MKW_CRIT,
+# crit_path.py, deck_bench 20/11/2026) holds ~9 ms of game code a frame on the game's threads; -O1 was the initial
+# import's choice, with no measurement behind it in the repo. Setup takes longer: the game code compiles again.
+GEN_FLAGS = ["-O2", "-fno-strict-aliasing", "-Wno-return-type", "-Wno-unused-label", "-fvisibility=hidden",
              *ARCH_FLAGS[ARCH], *GEN_ARCH_FLAGS[ARCH]]  # fmt: skip
 RT_FLAGS = ["-O2", "-g", "-Wall", "-fno-strict-aliasing", *ARCH_FLAGS[ARCH]]
 sys.path.insert(0, str(ROOT / "recomp"))
