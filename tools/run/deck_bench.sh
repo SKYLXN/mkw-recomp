@@ -56,9 +56,12 @@ DRY=0
 QUALITY=low
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs mkw (tools/build/release.py APPRUN)
 # The switches the ab runs measure: run name, switch, what B is. Each must log 'in the B blocks ... (MKW_<NAME>' when
-# set to ab, or the pair is reported void.
+# set to ab, or the pair is reported void. A switch given as MKW_<NAME>=<value> is set as is (a B-block value such as
+# MKW_SPLIT_US_B, which logs no such line: not checked).
 AB_PAIRS=(
   "ab-rumble-async:MKW_RUMBLE_ASYNC:B = the game's vibration sent by the motion thread (the build's default)"
+  "ab-split-1000:MKW_SPLIT_US_B=1000:B = replay parts of at least 1 ms instead of 2 (the GPU starts sooner, more splits)"
+  "ab-split-4000:MKW_SPLIT_US_B=4000:B = replay parts of at least 4 ms instead of 2 (fewer splits)"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
@@ -469,8 +472,10 @@ run() {   # NAME [SWITCH] -- VAR=VALUE...: one game run with COMMON and the give
 }
 
 ab_pair() {   # NAME SWITCH LABEL: the switch at ab, a plain run and its inverted twin (tools/run/ab.py balances them)
-  run "$1" "$2" -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" "$2=ab"
-  run "$1-inv" "$2" -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" MKW_AB_INVERT=1 "$2=ab"
+  local set="$2=ab" sw=$2
+  case "$2" in *=*) set=$2 sw="" ;; esac   # MKW_<NAME>=<value>: set as is, its engagement not checked
+  run "$1" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" "$set"
+  run "$1-inv" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" MKW_AB_INVERT=1 "$set"
   [ "$DRY" = 1 ] || pair_summary "$1" "$3"
 }
 
