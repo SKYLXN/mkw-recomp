@@ -17,6 +17,10 @@
 //   storage image or has a set without an update template (ru_note_bad).
 // - check: a hit is replayed as usual as well, and its packets compared with the cached ones. store (diagnosis): every
 //   draw is captured and stored, none reused: what capturing costs the misses.
+// - ab: reuse in the B blocks only (MKW_AB). Its A blocks are not the default build: MKW_DRAW_CACHE=1 holds for the
+//   whole run (Steam Deck, runs 0 1 1 0: frame 25.8 ms off, 26.2 on, within the noise) and the slots follow every
+//   packet in both (rec_slots_on: a B block would start on stale ones; their cost is not measured). So a pair leaves
+//   the slots' cost out, and a gain over the default needs separate runs of MKW_REUSE 0 and 1 as well.
 // Entries live in an arena per submission and move to the current one when hit; those not hit for RU_GENS
 // submissions go.
 #include <stddef.h>
@@ -134,8 +138,8 @@ static int mode_read(void) {
         tab = calloc(RU_TAB, sizeof *tab);
         if (!tab) rt_fatal("vk_reuse: out of memory");
         rec_slots_on = 1;
-        rt_log("vk_reuse: draws equal to an earlier submission's reuse its packets%s",
-               ru_on == 2 ? " (check: replayed as well and compared)" : ru_on == 3 ? " in the B blocks (MKW_AB)" : "");
+        rt_log("vk_reuse: draws equal to an earlier submission's reuse its packets%s (MKW_REUSE)",
+               ru_on == 2 ? " (check: replayed as well and compared)" : ru_on == 3 ? " in the B blocks" : "");
     }
     return ru_on;
 }
