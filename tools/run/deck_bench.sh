@@ -62,6 +62,7 @@ AB_PAIRS=(
   "ab-rumble-async:MKW_RUMBLE_ASYNC:B = the game's vibration sent by the motion thread (the build's default)"
   "ab-split-1000:MKW_SPLIT_US_B=1000:B = replay parts of at least 1 ms instead of 2 (the GPU starts sooner, more splits)"
   "ab-split-4000:MKW_SPLIT_US_B=4000:B = replay parts of at least 4 ms instead of 2 (fewer splits)"
+  "ab-wb-early:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"

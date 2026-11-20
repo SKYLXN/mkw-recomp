@@ -187,7 +187,11 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
             uint64_t wf = 0;   // the fence written back
             if (lost_on > 1 || __atomic_load_n(&n_mbase, __ATOMIC_ACQUIRE)) {
                 plat_mutex_lock(&shadow_lock);
-                spend_take();
+                // The ranges whose write-back found shadow_lock taken leave first (sdone): this range's entry of the
+                // fence before, its bases gone, was otherwise the oldest here, and this fence's write-back ran without
+                // its base (trapped or copied whole, the CPU's newer bytes reverted). MKW_WB_EARLY comes here right
+                // after that fence is done, with no sync in between to drain them.
+                sdone_drain();
                 int i = spend_oldest(addr, addr + size);
                 if (i >= 0) base = spend[i].base, mbase = spend[i].mbase, lazy = spend[i].lazy, wf = spend[i].fence,
                             spend[i].base = spend[i].mbase = NULL, spend[i].lazy = NULL;

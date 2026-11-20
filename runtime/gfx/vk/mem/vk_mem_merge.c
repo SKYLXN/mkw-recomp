@@ -33,6 +33,16 @@ static int cpu_wins(void) {
     return RT_KNOB_ON(m);
 }
 
+// MKW_WB_EARLY (vk_exec_cb.c): the largest range whose write-back may run before its fence, 0 when none may. Its
+// pending entry leaves with it, so until the fence the syncs copy the CPU's bytes of it into the shadow plainly, under
+// the submission's last parts. merge_in does the same with MKW_SHADOW_CPU_WINS, all but a CPU write of the base's value
+// over a byte the GPU changed; without it merge_in keeps every byte the GPU changed out until the fence, and a range
+// without a base (past MERGE_MAX, or MKW_SHADOW_MERGE off) is skipped whole. "ab" is off in the A blocks: not on.
+uint64_t vk_mem_wb_early_max(void) {
+    int on = rt_knob("SHADOW_MERGE", "1") == 1 && rt_knob("SHADOW_CPU_WINS", mem_early_waits() ? "1" : "0") == 1;
+    return on ? MERGE_MAX : 0;
+}
+
 // The bytes of [lo, hi) of r's shadow, or NULL past MERGE_MAX (s_nobase counts them).
 uint8_t *merge_base(const PoolRec *r, uint64_t lo, uint64_t hi) {
     if (!r || !r->smap || lo < r->import_lo || hi > r->import_hi || hi - lo > MERGE_MAX) return NULL;
