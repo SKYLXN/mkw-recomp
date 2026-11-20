@@ -134,8 +134,8 @@ static int mode_read(void) {
         tab = calloc(RU_TAB, sizeof *tab);
         if (!tab) rt_fatal("vk_reuse: out of memory");
         rec_slots_on = 1;
-        rt_log("vk_reuse: draws equal to an earlier submission's reuse its packets%s",
-               ru_on == 2 ? " (check: replayed as well and compared)" : ru_on == 3 ? " in the B blocks (MKW_AB)" : "");
+        rt_log("vk_reuse: draws equal to an earlier submission's reuse its packets%s (MKW_REUSE)",
+               ru_on == 2 ? " (check: replayed as well and compared)" : ru_on == 3 ? " in the B blocks" : "");
     }
     return ru_on;
 }
