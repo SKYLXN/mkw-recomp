@@ -31,7 +31,8 @@ static void *grow(void *p, int *cap, size_t elem) {
 // ---- resources of one command buffer, freed by its completion callback
 
 typedef struct { VkBuffer buf; VmaAllocation alloc; uint8_t *map; uint64_t size, used; } Chunk;
-typedef struct { uint64_t addr, size; } Range;
+typedef struct { uint64_t addr, size, part; uint8_t done; } Range;   // part: the newest part writing it; done: written
+                                                                     // back before the fence (vk_exec_cb_early)
 struct CbRes {
     Chunk *chunks;
     int nchunks, cchunks;
@@ -40,6 +41,8 @@ struct CbRes {
     Range *written;
     int nwritten, cwritten;
     int32_t *wslot;    // open-addressing index of written (-1 empty), 2 * cwritten slots: note_written's lookup
+    uint64_t fence;
+    struct CbRes *next;   // live
 };
 
 _Thread_local CbRes *cur;
@@ -55,10 +58,135 @@ static VkDescriptorPool spare_pool[SPARE_POOLS];
 static Chunk spare_chunk[SPARE_CHUNKS];
 static int nspare_pool, nspare_chunk;
 
+// MKW_WB_EARLY (default 0; "ab" in the B blocks only): a range whose GPU writes are finished goes back to guest memory
+// before its submission's fence. On the Deck cb_done's ~267 vk_gpu_written (merge compares of 11 MiB for ~90 KiB
+// changed) took 3.0-3.2 ms a frame between the fence being reached and its waiters released, 1:1 on the race frame,
+// while from the submission's last vkQueueSubmit2 to the GPU's end (2.4-3.7 ms) this thread only slept in
+// vkWaitSemaphores (deck6 base.log, MKW_TRACE_TL). The same calls on the same thread, earlier; the value is done only
+// after cb_done, as before.
+// A range may go once its submission is recorded in full and is the oldest not done (vk_sync.c calls vk_exec_cb_early
+// then; spend_oldest finds the same entry as at the fence) and every GPU write of the submission overlapping it by
+// bytes is in a part the GPU has finished: its shadow bytes are final. Every writer, not only the range's own: A
+// written back while a later part still writes overlapping B stays wrong after the fence too (a clear, then adds
+// ending on B's base: B's merge copies nothing and A's half-done copy stays). So note_written keeps the newest part
+// of each range (a part's first build notes it again: vk_exec_draw_new_cb clears B.res_valid at each split), and the
+// copies, clears and counters (note_gpu_write; their own write-backs stay at the fence) are listed in xw. What a chunk
+// records (MKW_REPLAY_PAR) has part UINT64_MAX: it waits for the fence. A later submission's writes wait for this
+// one's value as before (MKW_WB_ORDER). Guest memory gets the results range by range, as on the console.
+// Off with VRAM mirrors (MKW_MEMORY=mirror, the default on a discrete GPU): there a shader writes the mirror and the
+// bytes reach the shadow in the submission's last part (vk_mem_mirror_end), whatever part wrote them.
+// On the replay thread this costs one call with an atomic load per note_written (~2,300 a frame, ~5-7 us in all) and
+// one uncontended lock pair per submission that draws; with the switch set, one more per copy, clear or counter.
+typedef struct { uint64_t fence, addr, size, part; } XWrite;
+static PlatMutex live_lock = PLAT_MUTEX_INIT;
+static CbRes *live;      // live_lock: those whose cb_done has not run
+static XWrite *xw;       // live_lock: the GPU writes outside note_written, of values vk_exec_cb_early has not passed
+static int nxw, cxw;
+static Range *xs, *blk;  // completion thread: xw's entries of the value at hand; the writes the GPU has not finished
+static int cxs, cblk;
+// completion thread, since the last census line: ranges and bytes written back before the fence and the time it took,
+// those left to the fence, and of these the ones whose own part was finished but a later part wrote over them
+static uint64_t wbe_n, wbe_bytes, wbe_ns, wbf_n, wbf_bytes, wbe_held, wb_subs;
+
+static int wb_early_mode(void) {
+    static int m = -1;
+    int v = __atomic_load_n(&m, __ATOMIC_ACQUIRE);
+    if (v >= 0) return v;
+    int asked = rt_knob("WB_EARLY", "0");
+    v = vk_mirror_on ? 0 : asked;
+    if (__atomic_exchange_n(&m, v, __ATOMIC_ACQ_REL) < 0 && asked) {
+        if (v) rt_log("vk: write-backs of ranges the GPU has finished writing run before the fence%s (MKW_WB_EARLY)",
+                      v == 2 ? " in the B blocks" : "");
+        else rt_log("vk: MKW_WB_EARLY is off with VRAM mirrors: GPU writes reach the shadow in a submission's last part");
+    }
+    return v;
+}
+
+void note_gpu_writer(const VkExec *ex, uint64_t addr, uint64_t size) {
+    if (!wb_early_mode()) return;
+    uint64_t part = vk_sync_part_recording();
+    plat_mutex_lock(&live_lock);
+    if (nxw == cxw) xw = grow(xw, &cxw, sizeof *xw);
+    xw[nxw++] = (XWrite){ex->fence, addr, size, part};
+    plat_mutex_unlock(&live_lock);
+}
+
+static void blk_add(const Range *w, uint64_t pd, int *n) {
+    if (w->part <= pd) return;
+    if (*n == cblk) blk = grow(blk, &cblk, sizeof *blk);
+    blk[(*n)++] = *w;
+}
+
+void vk_exec_cb_early(uint64_t fence) {   // completion thread
+    int mode = wb_early_mode();
+    if (!mode) return;
+    CbRes *rs[16];
+    int nrs = 0, nxs = 0, keep = 0;
+    plat_mutex_lock(&live_lock);
+    for (int i = 0; i < nxw; i++) {
+        if (xw[i].fence < fence) continue;   // done, or passed here
+        if (xw[i].fence == fence) {
+            if (nxs == cxs) xs = grow(xs, &cxs, sizeof *xs);
+            xs[nxs++] = (Range){xw[i].addr, xw[i].size, xw[i].part, 0};
+        }
+        xw[keep++] = xw[i];
+    }
+    nxw = keep;
+    for (CbRes *r = live; r && nrs <= 16; r = r->next)
+        if (r->fence == fence) {
+            if (nrs < 16) rs[nrs] = r;
+            nrs++;
+        }
+    plat_mutex_unlock(&live_lock);
+    // rs[] stay: this thread frees them (cb_done), and nothing notes into them once the value is recorded in full
+    if (!RT_KNOB_ON(mode) || !nrs || nrs > 16) return;   // more than 16 recording threads: all at the fence
+    uint64_t t0 = kern_now_ns(), held = 0;
+    for (int wrote = 1; wrote;) {   // again while it wrote: parts ended meanwhile
+        uint64_t pd = vk_sync_part_done();
+        int nb = 0;
+        wrote = 0, held = 0;
+        for (int i = 0; i < nxs; i++) blk_add(&xs[i], pd, &nb);
+        for (int j = 0; j < nrs; j++)
+            for (int i = 0; i < rs[j]->nwritten; i++) blk_add(&rs[j]->written[i], pd, &nb);
+        for (int j = 0; j < nrs; j++)
+            for (int i = 0; i < rs[j]->nwritten; i++) {
+                Range *w = &rs[j]->written[i];
+                if (w->done || w->part > pd) continue;
+                int b = 0;
+                while (b < nb && !(w->addr < blk[b].addr + blk[b].size && blk[b].addr < w->addr + w->size)) b++;
+                if (b < nb) {
+                    held++;
+                    continue;
+                }
+                vk_gpu_written(w->addr, w->size);   // live_lock not held
+                w->done = 1, wrote = 1, wbe_n++, wbe_bytes += w->size;
+            }
+    }
+    wbe_held += held, wbe_ns += kern_now_ns() - t0;
+}
+
 static void cb_done(void *arg) {   // completion thread
     CbRes *r = arg;
     VkCtx *c = vk_ctx();
-    for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
+    plat_mutex_lock(&live_lock);
+    for (CbRes **p = &live; *p; p = &(*p)->next)
+        if (*p == r) {
+            *p = r->next;
+            break;
+        }
+    plat_mutex_unlock(&live_lock);
+    for (int i = 0; i < r->nwritten; i++) {
+        if (r->written[i].done) continue;
+        vk_gpu_written(r->written[i].addr, r->written[i].size);
+        wbf_n++, wbf_bytes += r->written[i].size;
+    }
+    if (wb_early_mode() && ++wb_subs == 600) {
+        rt_log("vk: write-backs over 600 submissions: %llu ranges (%.1f MiB) before the fence in %.2f ms a submission, "
+               "%llu (%.1f MiB) at the fence, %llu held back by a later part's write (MKW_WB_EARLY)",
+               (unsigned long long)wbe_n, wbe_bytes / 1048576.0, wbe_ns / 1e6 / 600, (unsigned long long)wbf_n,
+               wbf_bytes / 1048576.0, (unsigned long long)wbe_held);
+        wbe_n = wbe_bytes = wbe_ns = wbf_n = wbf_bytes = wbe_held = wb_subs = 0;
+    }
     for (int i = 0; i < r->npools; i++) {
         vkResetDescriptorPool(c->device, r->pools[i], 0);
         plat_mutex_lock(&spare_lock);
@@ -80,7 +208,10 @@ static void cb_done(void *arg) {   // completion thread
 CbRes *cb_res_new(VkExec *ex) {
     cur = calloc(1, sizeof *cur);
     if (!cur) rt_fatal("vk: out of memory");
-    cur_fence = ex->fence;
+    cur_fence = cur->fence = ex->fence;
+    plat_mutex_lock(&live_lock);
+    cur->next = live, live = cur;
+    plat_mutex_unlock(&live_lock);
     memset(&B, 0, sizeof B);
     vk_completion_add(ex->fence, cb_done, cur);
     return cur;
@@ -166,11 +297,16 @@ void wpage_note(const VkExec *ex, uint64_t addr, uint64_t size, const char *what
 }
 
 void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
+    uint64_t part = vk_sync_part_recording();   // MKW_WB_EARLY
     wpage_note(ex, addr, size, "storage");
     CbRes *r = cb_res(ex);
     if (r->cwritten)
-        for (uint32_t k = wslot_of(addr, size, r->cwritten); r->wslot[k] >= 0; k = (k + 1) & (uint32_t)(2 * r->cwritten - 1))
-            if (r->written[r->wslot[k]].addr == addr && r->written[r->wslot[k]].size == size) return;
+        for (uint32_t k = wslot_of(addr, size, r->cwritten); r->wslot[k] >= 0; k = (k + 1) & (uint32_t)(2 * r->cwritten - 1)) {
+            Range *w = &r->written[r->wslot[k]];
+            if (w->addr != addr || w->size != size) continue;
+            if (part > w->part) w->part = part;   // the newest writer; a chunk's UINT64_MAX stays
+            return;
+        }
     if (r->nwritten == r->cwritten) {
         r->written = grow(r->written, &r->cwritten, sizeof *r->written);   // powers of two from 8: a mask indexes wslot
         free(r->wslot);
@@ -178,7 +314,7 @@ void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
         memset(r->wslot, 0xff, sizeof *r->wslot * 2 * (size_t)r->cwritten);
         for (int i = 0; i < r->nwritten; i++) wslot_put(r, i);
     }
-    r->written[r->nwritten++] = (Range){addr, size};
+    r->written[r->nwritten++] = (Range){addr, size, part, 0};
     wslot_put(r, r->nwritten - 1);
     vk_mem_gpu_pending(addr, size);
 }

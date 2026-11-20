@@ -80,6 +80,7 @@ static void note_gpu_write(VkExec *ex, uint64_t addr, uint64_t size) {
     Range *r = malloc(sizeof *r);
     if (!r) rt_fatal("vk: out of memory");
     *r = (Range){addr, size};
+    note_gpu_writer(ex, addr, size);
     vk_mem_gpu_pending(addr, size);
     vk_completion_add(ex->fence, guest_written_cb, r);
 }

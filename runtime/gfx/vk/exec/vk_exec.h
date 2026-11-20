@@ -126,6 +126,7 @@ void vk_exec_pass_end(VkExec *ex);
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
 void wpage_note(const VkExec *ex, uint64_t addr, uint64_t size, const char *what);   // MKW_TRACE_WPAGE (vk_exec_cb.c)
+void note_gpu_writer(const VkExec *ex, uint64_t addr, uint64_t size);   // MKW_WB_EARLY (vk_exec_cb.c): a copy, clear or counter
 // vk_texture.c (MKW_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.

@@ -583,6 +583,9 @@ void vk_sync_shutdown(void);               // finish, stop the completion thread
 // command buffer it holds at the end (0: that one stays empty and is not submitted). A weak vk_sync.c version accepts
 // empty streams only.
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence);
+// MKW_WB_EARLY (vk_exec_cb.c), on the completion thread before it waits for fence, the oldest value not done and
+// recorded in full: the write-backs of the ranges the GPU has finished writing. A weak vk_sync.c version does nothing.
+void vk_exec_cb_early(uint64_t fence);
 // Inside vk_exec_record, outside a render pass: ends the command buffer recorded so far, submits it (after the upload
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.
@@ -763,6 +766,7 @@ int vk_guard_test(void);                       // MKW_GPU_GUARD_TEST: a hazard c
 void vk_guard_test_bind(VkCommandBuffer cb, int k);
 void vk_guard_test_free(uint64_t use);
 uint64_t vk_sync_part_next(void);      // the part value the next queue submission signals
+uint64_t vk_sync_part_recording(void); // the part value of what this thread records now; UINT64_MAX in a chunk
 uint64_t vk_sync_issued_pair(uint64_t *part);   // vk_sync_issued() and the part value of its last part, read together
 void vk_guard_tie(const char *what, uint64_t handle, uint64_t lo, uint64_t use, uint64_t tie_part);   // at queueing:
                                        // stops when a part after the one the destruction waits for names the object

@@ -197,6 +197,9 @@ WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint
     return 0;
 }
 
+// Weak stand-in for vk_exec_cb.c's (MKW_WB_EARLY): the probes link without the replay.
+WEAK void vk_exec_cb_early(uint64_t fence) { (void)fence; }
+
 // MKW_TRACE_TL: the completion thread's side effects by callback, run between a value being reached and its waiters
 // being released (tl-se1: 1.5 ms a frame on the race frame's critical path). Every 3000 values, the costliest.
 static struct { void (*fn)(void *); uint64_t ns, n; } cb_cost[32];
@@ -269,6 +272,10 @@ static void completion_main(void *arg) {
         if (issued > done) {
             uint64_t want = done + 1;
             plat_mutex_unlock(&st_lock);
+            // MKW_WB_EARLY: want is recorded in full (issued >= want, read under st_lock) and the oldest value not
+            // done; what the GPU has finished writing of it goes back to guest memory now, not after this wait.
+            static uint64_t early_for;   // this thread only: once per value, not after each 100 ms
+            if (early_for != want) early_for = want, vk_exec_cb_early(want);
             VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
                                       .pSemaphores = &c->timeline, .pValues = &want};
             __atomic_store_n(&comp_gpu_since, (int64_t)kern_now_ns(), __ATOMIC_RELAXED);
@@ -666,6 +673,11 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
 static _Thread_local VkCompletionList *defer_to;
 
 void vk_completion_defer(VkCompletionList *l) { defer_to = l; }
+
+// The part value that will carry what this thread records now (MKW_WB_EARLY, vk_exec_cb.c): part_val moves only on the
+// thread recording the submission (sub_lock). UINT64_MAX on a thread recording a chunk (MKW_REPLAY_PAR, on by default
+// with 6+ cores): its command buffer goes in a later part, which one is not known yet.
+uint64_t vk_sync_part_recording(void) { return defer_to ? UINT64_MAX : __atomic_load_n(&part_val, __ATOMIC_ACQUIRE) + 1; }
 
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
     if (defer_to) {
