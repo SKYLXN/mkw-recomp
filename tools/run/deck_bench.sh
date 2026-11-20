@@ -16,6 +16,9 @@
 #                   (all off by default in the build, so A is today's behaviour)
 #   ab-known-*      only with --only ab-known: the pairs already measured twice on a Deck (MKW_REPLAY_PAR, MKW_QUEUE_WAITS,
 #                   MKW_REPLAY_CORE), to check them again on a new build
+#   dc-*            only with --only dc: MKW_DRAW_CACHE=0 and 1 in the order 0 1 1 0 (read once at start, so separate
+#                   runs): descriptor sets kept across frames by their contents, 'left for slower CPUs' (roadmap) and never
+#                   measured on a Deck; it hung once in four runs on an RX 9070 XT (#592)
 #   hang-*          only with --only hang: whether a stable pstate switch mid-race hangs a Steam Deck (one did, 19/11/2026):
 #                   MKW_GPU_CLOCKS=ab every 2 s without and with MKW_PSTATE_DRAIN, and the peak held from the start, two
 #                   runs each, with per-draw breadcrumbs (MKW_GPU_CRUMBS_DRAW). A hang resets the GPU: only on purpose
@@ -26,6 +29,9 @@
 #                   render thread's share of the frame that is ours, not the game's), census of the race window
 #   diag-crit       only with --only diag: MKW_CRIT over 10 s of race with MKW_TRACE=sched, for tools/run/crit_path.py
 #                   (which thread and state holds each frame: running, waiting for a core, a host call, a wake)
+#   diag-ops        only with --only diag: MKW_TRACE=perf,draw, the replay thread's time by op and prepare_draw by stage
+#   diag-wb         only with --only diag: MKW_WB_CENSUS, the write-back of what the GPU wrote, between the GPU's end and
+#                   the game's release (3.1-3.2 ms a frame on a Deck, 20/11/2026)
 # All runs but own use the Low quality rows (the preset of every published Deck number) and pin the display rows
 # (720 lines, no frame generation, no mods, no overlay); --keep-quality keeps the player's quality and display rows.
 #
@@ -35,7 +41,7 @@
 # (tools/run/README.md, race.sh). No root, repository or Python. Results: ~/mkw-bench/<date>/ (a log per run,
 # samples.csv, report.txt, sysinfo.txt) and a .tar.gz of it, read on a PC with tools/run/ab.py, summary.py, gpucmp.py.
 #
-# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,ab-known,res540,fg,preset,diag,hang] [--preset]
+# Usage: bash deck_bench.sh [--appimage PATH] [--only base,own,ab,ab-known,res540,fg,preset,diag,dc,hang] [--preset]
 #                           [--keep-quality]
 #                           [--race-secs N] [--dry-run]
 set -uo pipefail   # no -e: the script decides itself what stops it
@@ -52,10 +58,7 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs m
 # The switches the ab runs measure: run name, switch, what B is. Each must log 'in the B blocks ... (MKW_<NAME>' when
 # set to ab, or the pair is reported void.
 AB_PAIRS=(
-  "ab-sibling:MKW_SIBLING_HELPERS:B = vk completion and vk shadow on the replay core's idle processor"
-  "ab-early-dedup:MKW_EARLY_DEDUP:B = a submission's repeated early-read destinations listed once"
-  "ab-hot-keep:MKW_SHADOW_HOT_KEEP:B = a hot shadow pool written again stays hot"
-  "ab-queue-nocopy:MKW_QUEUE_NOCOPY:B = the queues' held work read in place, one copy instead of three"
+  "ab-rumble-async:MKW_RUMBLE_ASYNC:B = the game's vibration sent by the motion thread (the build's default)"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
@@ -371,6 +374,8 @@ report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med kee
       diag-host) awk '/^\[host\] host time: /{on = 1} on && n++ < 14' "$log" | sed 's/^\[host\] /  /' ;;
       diag-crit) [ -s "$OUT/crit.bin" ] && echo "  crit.bin written ($(du -k "$OUT/crit.bin" | cut -f1) KiB): tools/run/crit_path.py reads it" \
                    || echo "  no crit.bin: $(grep -m1 'crit: ' "$log")" ;;
+      diag-ops) grep -E 'perf: (replay ops|prepare_draw per draw)' "$log" | tail -2 | sed 's/^\[host\] /  /' | cut -c1-400 ;;
+      diag-wb) grep 'merged write-backs' "$log" | tail -1 | sed 's/^\[host\] /  /' | cut -c1-400 ;;
       fg-off) ;;
       fg-*) x=$(grep 'vk: frame generation [0-9]x:' "$log" | tail -1)
             [ -n "$x" ] && printf '  %s\n' "${x#*vk: }" || \
@@ -469,11 +474,11 @@ ab_pair() {   # NAME SWITCH LABEL: the switch at ab, a plain run and its inverte
   [ "$DRY" = 1 ] || pair_summary "$1" "$3"
 }
 
-n=0
+n=0 dcn=0
 want base && n=$((n + 1)); want own && n=$((n + 1)); want res540 && n=$((n + 1))
-want ab && n=$((n + 2 * ${#AB_PAIRS[@]})); want ab-known && n=$((n + 2 * ${#AB_KNOWN[@]})); want hang && n=$((n + 6))
+want ab && n=$((n + 2 * ${#AB_PAIRS[@]})); want ab-known && n=$((n + 2 * ${#AB_KNOWN[@]})); want hang && n=$((n + 6)); want dc && n=$((n + 4))
 want fg && n=$((n + 2)) && [ "$product" = Galileo ] && n=$((n + 1)); want preset && n=$((n + 4))
-want diag && n=$((n + 2))
+want diag && n=$((n + 4))
 echo "mkw-recomp Deck bench: $n runs, about $((n * (RACE_SECS + 150 + COOL_SECS) / 60)) minutes; results in $OUT"
 echo "Leave the Deck plugged in and do not touch it until it says done (Ctrl-C stops it and keeps what was measured)."
 [ "$DRY" = 1 ] || { sampler > "$OUT/samples.csv" 2>/dev/null & SAMPLER_PID=$!; }
@@ -483,6 +488,8 @@ want own && run own --
 if want diag; then
   run diag-host -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_HOST_TIME=1
   run diag-crit -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE=perf,sched MKW_CRIT=w30-40 "MKW_CRIT_OUT=$OUT/crit.bin"
+  run diag-ops -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE=perf,draw
+  run diag-wb -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_WB_CENSUS=1
 fi
 PAIRS=()
 want ab && PAIRS+=("${AB_PAIRS[@]}")
@@ -490,6 +497,9 @@ want ab-known && PAIRS+=("${AB_KNOWN[@]}")
 for spec in "${PAIRS[@]}"; do   # name:switch:label
   ab_pair "${spec%%:*}" "$(printf '%s' "$spec" | cut -d: -f2)" "$(printf '%s' "$spec" | cut -d: -f3-)"
 done
+if want dc; then
+  for v in 0 1 1 0; do run "dc-$v-$((++dcn))" -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_DRAW_CACHE=$v"; done
+fi
 if want hang; then
   for i in 1 2; do
     run "hang-switch-$i" MKW_GPU_CLOCKS -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_AB=2 MKW_GPU_CLOCKS=ab MKW_PSTATE_DRAIN=0 MKW_GPU_CRUMBS_DRAW=1

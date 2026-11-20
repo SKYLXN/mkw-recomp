@@ -591,18 +591,44 @@ int input_rumble_triggers_enabled(void) {
     return cfg_bool("MKW_RUMBLE_TRIGGERS");
 }
 
-int input_rumble(int player, uint16_t low, uint16_t high, uint32_t ms) {
+static int rumble_locked(int player, uint16_t low, uint16_t high, uint32_t ms) {   // under lock
     int ok = 0;
     static int triggers = -1;
     static unsigned seen;
     if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
-    plat_mutex_lock(&lock);
     SDL_Gamepad *g = player <= 0 ? pad : player < INPUT_MAX_PLAYERS ? extra[player] : NULL;
     int rumble = player <= 0 ? pad_rumble : player < INPUT_MAX_PLAYERS && extra_rumble[player];
     if (state == 1 && g && rumble) {
         ok = SDL_RumbleGamepad(g, low, high, ms);
         if (triggers) SDL_RumbleGamepadTriggers(g, high, high, ms);   // unsupported pads return false: ignored
     }
+    return ok;
+}
+
+// MKW_RUMBLE_ASYNC (default 1; 0 sends on the caller's thread; "ab" in the B blocks only): with the motion thread
+// running, the game's vibration is sent by it (within 4 ms) instead of on the game thread that called
+// SendVibrationValues. Steam Deck OLED, MKW_HOST_TIME over a 100 s race (deck_bench diag-host, 20/11/2026):
+// SendVibrationValues took 32.8 ms per second on the game's threads, 164 us a call, the SDL write to the pad and the
+// lock the motion thread holds through SDL_UpdateGamepads.
+static struct { int on; uint16_t low, high; uint32_t ms; } rumble_rq[INPUT_MAX_PLAYERS];   // under rumble_rq_lock
+static PlatMutex rumble_rq_lock = PLAT_MUTEX_INIT;
+
+int input_rumble(int player, uint16_t low, uint16_t high, uint32_t ms) {
+    static int mode = -1;
+    if (mode < 0) {
+        mode = rt_knob("RUMBLE_ASYNC", "1");
+        rt_log("hid: the game's vibration sent by the motion thread%s (MKW_RUMBLE_ASYNC)",
+               mode == 2 ? " in the B blocks" : mode ? "" : ": off");
+    }
+    if (player < INPUT_MAX_PLAYERS && RT_KNOB_ON(mode) && __atomic_load_n(&motion_thread, __ATOMIC_ACQUIRE) == 1) {
+        int p = player < 0 ? 0 : player;
+        plat_mutex_lock(&rumble_rq_lock);
+        rumble_rq[p].on = 1, rumble_rq[p].low = low, rumble_rq[p].high = high, rumble_rq[p].ms = ms;
+        plat_mutex_unlock(&rumble_rq_lock);
+        return 1;
+    }
+    plat_mutex_lock(&lock);
+    int ok = rumble_locked(player, low, high, ms);
     plat_mutex_unlock(&lock);
     return ok;
 }
@@ -675,6 +701,13 @@ static void motion_main(void *arg) {
             have[p] = sensors_ready(p, gp) && SDL_GetGamepadSensorData(gp, SDL_SENSOR_ACCEL, a[p], 3) &&
                       SDL_GetGamepadSensorData(gp, SDL_SENSOR_GYRO, g[p], 3);
         }
+        plat_mutex_lock(&rumble_rq_lock);   // the game's vibration (input_rumble, MKW_RUMBLE_ASYNC)
+        __typeof__(rumble_rq) rq;
+        memcpy(rq, rumble_rq, sizeof rq);
+        for (int p = 0; p < INPUT_MAX_PLAYERS; p++) rumble_rq[p].on = 0;
+        plat_mutex_unlock(&rumble_rq_lock);
+        for (int p = 0; p < INPUT_MAX_PLAYERS; p++)
+            if (rq[p].on) rumble_locked(p, rq[p].low, rq[p].high, rq[p].ms);
         plat_mutex_unlock(&lock);
         if (!input_motion_enabled()) continue;
         uint64_t now = kern_now_ns();
@@ -702,7 +735,7 @@ void input_motion_start(void) {
         if (state != 1) motion_thread = -1;
         else {
             if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
-            motion_thread = 1;
+            __atomic_store_n(&motion_thread, 1, __ATOMIC_RELEASE);
             dsu_start();   // its own thread, idle until MKW_DSU=1 (live)
         }
     }
