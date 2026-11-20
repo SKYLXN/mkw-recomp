@@ -58,11 +58,12 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs m
 # The switches the ab runs measure: run name, switch, what B is. Each must log 'in the B blocks ... (MKW_<NAME>' when
 # set to ab, or the pair is reported void. A switch given as MKW_<NAME>=<value> is set as is (a B-block value such as
 # MKW_SPLIT_US_B, which logs no such line: not checked).
+# Words after the switch are set as is in both runs (what the pair needs in A and B alike).
 AB_PAIRS=(
-  "ab-rumble-async:MKW_RUMBLE_ASYNC:B = the game's vibration sent by the motion thread (the build's default)"
-  "ab-split-1000:MKW_SPLIT_US_B=1000:B = replay parts of at least 1 ms instead of 2 (the GPU starts sooner, more splits)"
-  "ab-split-4000:MKW_SPLIT_US_B=4000:B = replay parts of at least 4 ms instead of 2 (fewer splits)"
   "ab-wb-early:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
+  "ab-fence-early:MKW_FENCE_EARLY MKW_EARLY_DEDUP=1:B = the game's fence wait ends once the frame is recorded (guard on)"
+  "ab-fence-early-g0:MKW_FENCE_EARLY MKW_FENCE_EARLY_GUARD=0 MKW_EARLY_DEDUP=1:B = the same without the shadow-copy guard (a measurement: a wrong object for a frame is possible)"
+  "ab-reuse:MKW_REUSE MKW_DRAW_CACHE=1:B = draws equal to an earlier submission's re-emit their packets (A: the draw cache alone); last, it may fail"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
@@ -473,10 +474,12 @@ run() {   # NAME [SWITCH] -- VAR=VALUE...: one game run with COMMON and the give
 }
 
 ab_pair() {   # NAME SWITCH LABEL: the switch at ab, a plain run and its inverted twin (tools/run/ab.py balances them)
-  local set="$2=ab" sw=$2
-  case "$2" in *=*) set=$2 sw="" ;; esac   # MKW_<NAME>=<value>: set as is, its engagement not checked
-  run "$1" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" "$set"
-  run "$1-inv" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" MKW_AB_INVERT=1 "$set"
+  local first=${2%% *} extra=() set sw
+  [ "$first" != "$2" ] && read -r -a extra <<< "${2#* }"
+  set="$first=ab" sw=$first
+  case "$first" in *=*) set=$first sw="" ;; esac   # MKW_<NAME>=<value>: set as is, its engagement not checked
+  run "$1" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" ${extra[@]+"${extra[@]}"} "$set"
+  run "$1-inv" $sw -- "${PIN[@]}" "${QROWS[@]}" MKW_FPS=60 MKW_TRACE_TL=1 "MKW_AB=$AB_SECS" MKW_AB_INVERT=1 ${extra[@]+"${extra[@]}"} "$set"
   [ "$DRY" = 1 ] || pair_summary "$1" "$3"
 }
 
