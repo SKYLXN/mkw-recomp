@@ -59,10 +59,15 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs m
 # set to ab, or the pair is reported void. A switch given as MKW_<NAME>=<value> is set as is (a B-block value such as
 # MKW_SPLIT_US_B, which logs no such line: not checked).
 # Words after the switch are set as is in both runs (what the pair needs in A and B alike).
-AB_PAIRS=(   # MKW_WB_EARLY_PAR three times, on top of the profile's MKW_WB_EARLY: ~0.9 ms expected, scene term 3-6 ms
+AB_PAIRS=(   # the three replay changes together twice (~2-3 ms expected against a 3-6 ms scene term), then each one twice
+  "ab-replay3-1:MKW_DRAW_LEAN MKW_WB_EARLY_PAR=ab MKW_USNAP_NO_TOUCH=ab:B = MKW_DRAW_LEAN + MKW_WB_EARLY_PAR + MKW_USNAP_NO_TOUCH"
+  "ab-replay3-2:MKW_DRAW_LEAN MKW_WB_EARLY_PAR=ab MKW_USNAP_NO_TOUCH=ab:B = MKW_DRAW_LEAN + MKW_WB_EARLY_PAR + MKW_USNAP_NO_TOUCH"
+  "ab-draw-lean-1:MKW_DRAW_LEAN:B = output-identical per-draw cuts on the replay thread"
+  "ab-draw-lean-2:MKW_DRAW_LEAN:B = output-identical per-draw cuts on the replay thread"
   "ab-wb-early-par-1:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
   "ab-wb-early-par-2:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
-  "ab-wb-early-par-3:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
+  "ab-usnap-no-touch-1:MKW_USNAP_NO_TOUCH:B = the uniform snapshot's lookups queue no shadow syncs"
+  "ab-usnap-no-touch-2:MKW_USNAP_NO_TOUCH:B = the uniform snapshot's lookups queue no shadow syncs"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
