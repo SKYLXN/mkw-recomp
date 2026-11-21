@@ -157,6 +157,14 @@ static int c24_on(void);
 // with zeros it wrote black and photo mode showed a black screen (issue #384; ph8, 1440 lines, 16/11/2026).
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
+    // MKW_DRAW_LEAN: for the vertex and fragment banks the input below is zero but for the storage slots and the base
+    // instance, and B.c0_in[k] only ever holds such an input (or zeros with c0_valid 0): comparing those two is the
+    // whole compare (0.50 us a draw with the support buffer, deck6)
+    if (k < 2 && draw_lean() && B.c0_valid[k] && B.c0_in[k].binst == c0_binst &&
+        !memcmp(B.c0_in[k].ssbo, ex->ssbo[st], sizeof B.c0_in[k].ssbo)) {
+        lean_n[4]++;
+        return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
+    }
     // vk_c0_fill reads the storage slots, and the uniform slots and dispatch size for compute or the base instance for
     // graphics: equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
     typeof(B.c0_in[0]) in;
@@ -335,7 +343,20 @@ typedef struct {
     VkImage image;
     VkDescriptorImageInfo out;
 } TexMemo;
+_Static_assert(sizeof(TexMemo) == 64, "TD entries are one cache line each (struct BindTls)");
 static _Thread_local TexMemo *TD;   // TD_N per recording thread (vk_exec_draw_thread)
+static inline uint32_t td_index(uint64_t h, int type, int sep) {
+    return (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)type << 7 ^ (uint64_t)sep) >> 51);
+}
+
+// At the bind op (MKW_DRAW_LEAN): the TD line and the slot token each handle's tex_info hit reads, ~2 us ahead (a hit
+// cost 0.13-0.15 us on the Deck, about one DRAM miss). type and sep can be 0: type is a uint16_t shifted by 7 (bit 22
+// at most) and sep is bit 0, neither reaches bits 51-63, so the index is h's alone. A later change of the hash only
+// makes this useless, never wrong.
+void td_prefetch(const uint64_t *h, int n) {
+    for (int i = 0; i < n; i++)
+        if (h[i]) __builtin_prefetch(&TD[td_index(h[i], 0, 0)], 0, 3), vk_texture_slot_prefetch((int)(h[i] & 0xfffff));
+}
 
 _Thread_local uint64_t td_stat[7];
 
@@ -360,7 +381,7 @@ static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage,
     }
     uint64_t th = pd_on ? plat_cycles() : 0;
     uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();   // before any lookup
-    typeof(TD[0]) *m = &TD[(h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate) >> 51];
+    typeof(TD[0]) *m = &TD[td_index(h, r->type, separate)];
     if (m->valid && m->h == h && m->type == r->type && m->separate == separate && m->sgen == sg &&
         slot_still(&m->gen, m->tok, h, gen)) {
         td_stat[0]++;
@@ -1081,13 +1102,14 @@ struct BindTls {
     DrawRS rs;
     DrawUPD upd;
     DrawBRA bra;
-    TexMemo td[TD_N];
+    _Alignas(64) TexMemo td[TD_N];   // 64-byte entries: from a 16-byte aligned calloc each straddled two lines
 };
 
 // This thread's descriptor state (vk_exec_draw_thread).
 void vk_exec_bind_thread(void) {
-    struct BindTls *t = calloc(1, sizeof *t);
+    struct BindTls *t = plat_aligned_alloc(sizeof *t, 64);   // never freed: the replay threads live for the run
     if (!t) rt_fatal("vk: out of memory (replay thread state)");
+    memset(t, 0, sizeof *t);
     t->rs.on = -1;
     dtl_ds = &t->ds, dtl_rs = &t->rs, dtl_upd = &t->upd, dtl_bra = &t->bra, TD = t->td;
 }

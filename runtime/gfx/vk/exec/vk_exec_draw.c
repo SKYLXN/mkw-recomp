@@ -53,9 +53,39 @@ void warn_once(int key, const char *fmt, ...) {
 _Thread_local DrawB *dtl_b;
 _Thread_local int pd_on;
 
+// MKW_DRAW_LEAN (vk_draw_internal.h draw_lean). Why: the replay's recording of the frame is the longest link of the
+// Deck's serial frame loop (17.6 ms of ~23), and 9.1 ms of it is 1,641 indexed draws at 5.55 us (deck6 diag-ops): the
+// feedback scan reran on almost every draw (0.52 us) because every texture bind bumped tex_serial, c0 compared a 2 KiB
+// input struct (0.50), and a texture memo hit cost a cold line (0.13-0.15 us, ~5.4 a draw).
+int draw_lean_mode = -1;
+_Thread_local uint64_t lean_n[6];
+
+int draw_lean_read(void) {
+    int m = __atomic_load_n(&draw_lean_mode, __ATOMIC_ACQUIRE);
+    if (m >= 0) return m;
+    m = rt_knob("DRAW_LEAN", "0");
+    if (__atomic_exchange_n(&draw_lean_mode, m, __ATOMIC_ACQ_REL) < 0)
+        rt_log("vk_exec: per-draw cuts (unchanged texture binds keep the feedback memo, c0 compared by its inputs, memo "
+               "lines prefetched at the bind, shader memo keyed on what shader_for reads)%s (MKW_DRAW_LEAN)",
+               m == 2 ? " in the B blocks" : m ? " on" : " off");
+    return m;
+}
+
 void vk_exec_draw_new_cb(void) {
     vk_exec_draw_thread();
     memset(&B, 0, sizeof B);
+    // a queue swap (vk_exec.c) or a MKW_REPLAY_PAR chunk replaces *ex without a bind op: bind_sig's fast path would keep
+    // RS.body from the other state, and a later bind restoring those bytes would skip the build. ~7 slow compares a frame.
+    bind_gen++;
+    static _Thread_local uint32_t calls;   // ~7 command buffers a frame: a line every ~600 frames
+    if (__atomic_load_n(&draw_lean_mode, __ATOMIC_RELAXED) && ++calls % 4096 == 0) {
+        rt_log("vk_exec: per-draw cuts since the last line: %llu feedback scans for %llu draws, %llu of %llu fragment "
+               "texture binds unchanged, %llu c0 banks matched by their storage slots, %llu shader memo hits by the "
+               "short key (MKW_DRAW_LEAN)",
+               (unsigned long long)lean_n[1], (unsigned long long)lean_n[0], (unsigned long long)lean_n[3],
+               (unsigned long long)lean_n[2], (unsigned long long)lean_n[4], (unsigned long long)lean_n[5]);
+        memset(lean_n, 0, sizeof lean_n);
+    }
 }
 
 // What is bound is not known any more (MKW_REUSE emitted packets of its own); the memos of this command buffer's
@@ -299,6 +329,16 @@ static uint32_t attached_as(const VkExec *ex, const SubRange *r) {
 #define FM_N 8192
 typedef struct { uint64_t h, tok; uint32_t gen; SubRange r; } FeedMemo;
 static _Thread_local FeedMemo *FM;   // FM_N per recording thread (vk_exec_draw_thread): its hits are read without a lock
+static inline uint32_t fm_index(uint64_t h) { return (uint32_t)((h * 0x9E3779B97F4A7C15ull) >> 51); }
+
+// At the bind op (MKW_DRAW_LEAN), ~0.5 us before feedback_scan reads them: an entry is 48 bytes and may straddle two lines.
+void fm_prefetch(const uint64_t *h, int n) {
+    for (int i = 0; i < n; i++)
+        if (h[i]) {
+            const char *f = (const char *)&FM[fm_index(h[i])];
+            __builtin_prefetch(f, 0, 3), __builtin_prefetch(f + sizeof *FM - 1, 0, 3);
+        }
+}
 
 // One lookup per texture lock: held over a draw's whole scan, the game's vk_texture_register waited for it (wlp2c,
 // Windows: 54 ms per s of race, the scan holding it 71).
@@ -313,19 +353,25 @@ static SubRange sampled_sub(uint64_t h) {
 }
 
 // Attachments of the open pass the fragment shader fs samples; kept while the shader, the texture bindings and the
-// pass stay the same.
+// pass stay the same. Under MKW_DRAW_LEAN tex_serial moves only when a fragment texture bind changes a handle, so the
+// slot registry's generation joins the key: with all of it equal a rescan reads the same handles, slots and attachments.
 static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
-    if (ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial) return ex->fb_sampled;
+    uint32_t gen = vk_texture_slots_gen();   // before any lookup
+    lean_n[0]++;
+    if (ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial &&
+        (!draw_lean() || ex->fb_gen == gen))
+        return ex->fb_sampled;
+    lean_n[1]++;
     const GfxShaderRes *res;
     int n = gfx_shader_resources(fs, GFX_RES_TEX, &res);
-    uint32_t m = 0, gen = vk_texture_slots_gen();   // before any lookup
+    uint32_t m = 0;
     int memo = td_mode();
     for (int r = 0; r < n; r++)
         for (int k = 0; k < (res[r].count ? res[r].count : 1); k++) {
             int slot = res[r].slot + k;
             uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
             if (!h) continue;
-            typeof(FM[0]) *f = &FM[(h * 0x9E3779B97F4A7C15ull) >> 51];
+            typeof(FM[0]) *f = &FM[fm_index(h)];
             if (memo && f->h == h && slot_still(&f->gen, f->tok, h, gen)) {
                 if (memo == 2) {
                     SubRange c = sampled_sub(h);
@@ -341,7 +387,7 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
             if (tok) *f = (typeof(*f)){.h = h, .tok = tok, .gen = gen, .r = sr};
             else f->h = 0;
         }
-    ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial, ex->fb_sampled = m;
+    ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_gen = gen, ex->fb_pass = ex->pass_serial, ex->fb_sampled = m;
     return m;
 }
 
@@ -445,7 +491,16 @@ static void memo_key(const VkExec *ex, MemoKey *k) {
 }
 
 static int memo_match(const VkExec *ex, const MemoKey *k) {
-    return k->prog == ex->prog && k->serial == ex->prog->serial && !memcmp(&k->pipe, &ex->pipe, sizeof k->pipe);
+    if (k->prog != ex->prog || k->serial != ex->prog->serial) return 0;
+    if (draw_lean()) {
+        // MKW_DRAW_LEAN: of the state, shader_for(VS/FS) reads only what vk_pipeline_answers does, vattr (vertex) and
+        // color_fmt (fragment). Any input vk_pipeline_answers gains must join this key.
+        int hit = !memcmp(k->pipe.vattr, ex->pipe.vattr, sizeof k->pipe.vattr) &&
+                  !memcmp(k->pipe.color_fmt, ex->pipe.color_fmt, sizeof k->pipe.color_fmt);
+        lean_n[5] += (uint64_t)hit;
+        return hit;
+    }
+    return !memcmp(&k->pipe, &ex->pipe, sizeof k->pipe);
 }
 
 static int shader_memo_on(void) {
@@ -655,4 +710,5 @@ void vk_exec_draw_thread(void) {
     dtl_b = &t->b, dtl_sm = &t->sm, dtl_pm = &t->pm;
     shader_tab = t->shader_tab, stagem = t->stagem, FM = t->fm;
     vk_exec_bind_thread();
+    draw_lean_read();   // its line early in the log
 }

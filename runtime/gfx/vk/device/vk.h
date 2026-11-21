@@ -492,6 +492,8 @@ int vk_texture_checked(int id, uint32_t ep);   // unlocked: slot id's check in s
 // its storage address is created, dropped, released or taken back into use. Unlocked; read it before the lookup it
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
+// Prefetches slot id's token word: slot_still reads it on a memo hit after slots_gen moved, about every 16 draws.
+void vk_texture_slot_prefetch(int id);
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_compute_written(int id);          // a compute dispatch wrote slot id as a storage image: the same,

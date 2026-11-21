@@ -112,9 +112,10 @@ typedef struct VkExec {
     uint32_t fbl_mask;                   // attachments of the open pass in that layout: bit i colour i, bit 8 depth
     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
                                          // or the last in-pass barrier
-    const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
-    uint32_t fb_serial, fb_pass, fb_sampled;
-    uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+    const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, slot registry
+    uint32_t fb_serial, fb_gen, fb_pass, fb_sampled;   // generation (MKW_DRAW_LEAN), pass serial
+    uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind (MKW_DRAW_LEAN: by a fragment texture
+                                         // bind that changes a handle) and pass begin
 } VkExec;
 
 // Begins dynamic rendering with the current targets unless a pass is open (a full memory barrier precedes it). Call

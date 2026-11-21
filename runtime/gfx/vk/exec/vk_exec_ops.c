@@ -431,12 +431,15 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 
 // ---- bind ops
 
-static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
+// Returns whether a handle changed.
+static int bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
     if (b->stage < 0 || b->stage >= NVN_BIND_STAGES || b->first < 0 || b->n < 0 || b->n > 32 || b->first + b->n > cap) {
         warn_once(W_BIND, "a bind of %d handles at %d of stage %d is out of range: ignored", b->n, b->first, b->stage);
-        return;
+        return 0;
     }
+    int ch = memcmp(&dst[b->first], b->h, 8 * (size_t)b->n) != 0;
     memcpy(&dst[b->first], b->h, sizeof(uint64_t) * (size_t)b->n);
+    return ch;
 }
 
 // DrawMeshTasks without VK_EXT_mesh_shader: the task program (if any) and the mesh
@@ -574,8 +577,11 @@ int vk_exec_bind_state(VkExec *ex, uint32_t op, const void *payload) {
     }
     case OP_BIND_TEX: {
         const p_bind_handles *b = payload;
-        bind_handles(b->stage >= 0 && b->stage < NVN_BIND_STAGES ? ex->tex[b->stage] : NULL, 128, b);
-        ex->tex_serial++;
+        int ch = bind_handles(b->stage >= 0 && b->stage < NVN_BIND_STAGES ? ex->tex[b->stage] : NULL, 128, b);
+        // feedback_scan reads only the fragment stage's textures (MKW_DRAW_LEAN): the game rebinds the same handles,
+        // 7.7 binds a draw, and each bump made it rescan
+        if (!draw_lean() || (ch && b->stage == NVN_STAGE_FS)) ex->tex_serial++;
+        if (b->stage == NVN_STAGE_FS) lean_n[2]++, lean_n[3] += (uint64_t)!ch;
         break;
     }
     case OP_BIND_SAMP: {
@@ -586,7 +592,7 @@ int vk_exec_bind_state(VkExec *ex, uint32_t op, const void *payload) {
     case OP_BIND_IMG: {
         const p_bind_handles *b = payload;
         bind_handles(b->stage >= 0 && b->stage < NVN_BIND_STAGES ? ex->img[b->stage] : NULL, 32, b);
-        ex->tex_serial++;   // feedback_scan reads only textures: a rescan at most
+        if (!draw_lean()) ex->tex_serial++;   // feedback_scan reads only textures: a rescan at most
         break;
     }
     case OP_PUSH_CONST: {   // the recorder clamped offset and size to the bank (nvn_api_cmd.c push_const)
@@ -621,6 +627,15 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         return;
     }
     if (vk_exec_bind_state(ex, op, payload)) {
+        // MKW_DRAW_LEAN: the memo lines the draw will read, ~0.5 us ahead of feedback_scan and ~2 us of the texture
+        // loop (a DRAM miss is ~0.1 us). Not in vk_exec_bind_state: the light walk (vk_exec_par.c) runs it too.
+        if (op == OP_BIND_TEX && draw_lean()) {
+            const p_bind_handles *b = payload;
+            if (b->stage >= 0 && b->stage < NVN_BIND_STAGES && b->n > 0 && b->n <= 32) {
+                td_prefetch(b->h, b->n);
+                if (b->stage == NVN_STAGE_FS) fm_prefetch(b->h, b->n);
+            }
+        }
         if (op == OP_BIND_PROGRAM || op == OP_BIND_UBO || op == OP_BIND_SSBO || op == OP_BIND_TEX || op == OP_BIND_IMG ||
             op == OP_PUSH_CONST)
             bind_gen++;

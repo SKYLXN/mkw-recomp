@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_exec.h"
@@ -77,6 +78,23 @@ extern _Thread_local uint32_t c0_dim[3] DRAW_SHARED, c0_binst DRAW_SHARED;
 extern _Thread_local const GfxShader *c0_cs DRAW_SHARED;
 extern _Thread_local uint64_t bind_gen DRAW_SHARED;
 extern _Thread_local int pd_on DRAW_SHARED;            // MKW_TRACE=draw timing (prepare_draw_ex sets it per draw)
+
+// MKW_DRAW_LEAN (default 0; "ab": in the B blocks), vk_exec_draw.c: output-identical cuts of the per-draw path (an
+// unchanged fragment texture bind keeps the feedback memo, c0 compared by its inputs, memo lines prefetched at the
+// bind, the shader memo keyed on what shader_for reads). Tested at each use, so "ab" switches per op and per draw:
+// every memo it keeps is validated against live state in both modes.
+extern int draw_lean_mode DRAW_SHARED;
+int draw_lean_read(void) DRAW_SHARED;
+static inline int draw_lean(void) {
+    int m = __atomic_load_n(&draw_lean_mode, __ATOMIC_ACQUIRE);
+    if (m < 0) m = draw_lean_read();
+    return RT_KNOB_ON(m);
+}
+// Since the last census line: feedback_scan calls and full scans, fragment texture binds and the unchanged ones, c0
+// banks matched by their storage slots and shader memo hits by the short key (the last two only in MKW_DRAW_LEAN's on blocks)
+extern _Thread_local uint64_t lean_n[6] DRAW_SHARED;
+void td_prefetch(const uint64_t *h, int n) DRAW_SHARED;   // vk_exec_bind.c: the TD lines and slot tokens of handles h
+void fm_prefetch(const uint64_t *h, int n) DRAW_SHARED;   // vk_exec_draw.c: the FM entries of handles h
 
 // MKW_BIND_STATS counters (vk_exec_bind.c bind_stats).
 // MKW_BIND_STATS counters (bind_stats).

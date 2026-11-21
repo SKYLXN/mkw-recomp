@@ -114,6 +114,10 @@ uint64_t vk_texture_slot_token(int id) {
     return v ? (v >> 16) << 32 | __atomic_load_n(&agen[v & 0xffff], __ATOMIC_ACQUIRE) : 0;
 }
 uint32_t vk_sampler_gen(void) { return __atomic_load_n(&samp_gen, __ATOMIC_RELAXED); }
+void vk_texture_slot_prefetch(int id) {
+    const uint64_t *si = __atomic_load_n(&sinfo, __ATOMIC_ACQUIRE);
+    if (si && id >= 0 && id < (1 << 20)) __builtin_prefetch(&si[id]);
+}
 
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view) {
     lock();
