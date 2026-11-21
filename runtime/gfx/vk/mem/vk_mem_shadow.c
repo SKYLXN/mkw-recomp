@@ -114,7 +114,10 @@ void shadow_touch(PoolRec *r) {
             if (nstouch == cstouch) vk_mem_grow((void **)&stouch, &cstouch, sizeof *stouch);
             stouch[nstouch++] = r;
             r->sfence = f;
-            plat_cond_signal(&touch_cv);
+            // early_main sleeps only on an empty list, so only the push that fills it can find it waiting; a signal is
+            // always a FUTEX_WAKE system call (linux_sync.c), ~500 touches a frame with the thread mostly awake. With
+            // "ab" it can sleep on a full list across a B/A flip, so every push signals as before.
+            if (nstouch == 1 || early_mode == 2) plat_cond_signal(&touch_cv);
         } else {
             if (nslate == cslate) vk_mem_grow((void **)&slate, &cslate, sizeof *slate);
             slate[nslate++] = r;

@@ -125,6 +125,8 @@ extern int shadow_on, read_traps, wb_defer;
 extern int64_t s_live_n, s_live_bytes;
 int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
 void shadow_touch(PoolRec *r);
+extern _Thread_local int vk_mem_no_touch;   // vk_mem_resolve leaves shadow_touch out (vk_usnap_begin's lookups)
+extern _Thread_local uint64_t vk_mem_touch_skips;   // the touches it left out
 void shadow_forget(PoolRec *r);
 // vk_mem_shadow_nc.c: shadow storage on cached memory that may not be coherent (#283)
 void shadow_alloc_flags(VkCtx *c, VmaAllocationCreateInfo *ai);

@@ -25,6 +25,7 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_usnap_int.h"
+#include "vk_mem_internal.h"
 
 #define ARENA_MIN (4u << 20)
 
@@ -60,6 +61,7 @@ static struct {
     // since the last summary
     uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs, from_take;
     uint64_t walk_ns;           // of copy_ns, collecting, sorting and merging the ranges (the rest: the bytes)
+    uint64_t skips;             // merge lookups that skipped an untouched pool's touch (MKW_USNAP_NO_TOUCH)
 } U;
 static _Thread_local VkUsnapLog *ulog;   // MKW_REPLAY_PAR: this thread's snapshot hits and drops (vk_usnap_log)
 static void log_add(int **a, int *n, int *cap, int v);
@@ -131,7 +133,10 @@ void usnap_collect(RngVec *v, const op_hdr *h, int depth) {
             if (b->addr && b->size) {
                 if (v->n == v->cap) v->r = grow(v->r, &v->cap, sizeof *v->r);
                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
-                v->r[v->n++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n};
+                // A block over MAX_RANGE fails vk_usnap_find (RADV's ubo_max is far above it), and a compute block
+                // (stage 5, NVN_STAGE_CS) may be read as storage (vk_exec_bind.c ssbo_slot): both bind the shadow.
+                v->r[v->n++] =
+                    (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n, b->size > MAX_RANGE || b->stage == 5};
             }
         }
         h = nvn_op_next(h);
@@ -220,12 +225,13 @@ static void summary(int force) {
     rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
            "%.3f ms (%.3f of it collecting and merging the ranges), %.0f uniform bindings from the copy, %.1f dropped "
            "by GPU writes, %.1f left out (GPU writes in flight), %.1f refused (not an imported pool), %.1f regions "
-           "from the submit's copy (MKW_USNAP_AT_SUBMIT)",
+           "from the submit's copy (MKW_USNAP_AT_SUBMIT), %.1f lookups skipped a pool touch (regions, a pool once per "
+           "region: not pools) (MKW_USNAP_NO_TOUCH)",
            (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
            U.copy_ns / s / 1e6, U.walk_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s,
-           U.from_take / s);
+           U.from_take / s, U.skips / s);
     U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.walk_ns = U.hits = U.drops = U.inflight = U.refused =
-        U.from_take = 0;
+        U.from_take = U.skips = 0;
 }
 
 // MKW_USNAP_AT_SUBMIT=3: per frame, the ranges whose bytes the game rewrote between its submit and the recording, with
@@ -271,13 +277,32 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         if (handles[i]) usnap_collect(&U.col, nvn_op_first(handles[i]), 0);
     usnap_sort(&U.col);
     wr_prune();
+    // MKW_USNAP_NO_TOUCH: these lookups do not queue the pools' shadow syncs. A snapshot binding binds the arena, whose
+    // bytes come from guest memory or the submit's copy, never the shadow; a pool is synced once a binding that reads
+    // its shadow buffer resolves it (every fallback goes through bind_range). Touching all ~930 regions here queued
+    // ~310 pools in the first millisecond, more than the 'vk shadow' thread syncs (72-85 a ms), so the first split
+    // synced ~196 a frame on the replay thread: 1.3-1.7 ms a frame on the Deck (deck6 'mem: shadow' lines).
+    static int nt = -1;
+    if (nt < 0) {
+        nt = rt_knob("USNAP_NO_TOUCH", "0");
+        if (nt)
+            rt_log("vk_usnap: the snapshot's pool lookups leave the shadow sync to the bindings that read a pool%s "
+                   "(MKW_USNAP_NO_TOUCH)", nt == 2 ? " in the B blocks" : "");
+    }
+    // Regions some reader binds the shadow for (Rng.shadow) keep the touch: the game rewrites per-object blocks once
+    // it has submitted (vk_exec_ubuf.c), so their sync stays at the start of the submission.
+    int no_touch = RT_KNOB_ON(nt);
     // merge, keeping only what lies wholly in one imported pool and no GPU write in flight touches
     U.nreg = 0;
     uint64_t total = 0;
     for (int i = 0; i < U.col.n;) {
         uint64_t lo = U.col.r[i].lo, hi = U.col.r[i].hi;
-        for (i++; i < U.col.n && U.col.r[i].lo <= hi; i++)
+        uint32_t shadow = U.col.r[i].shadow;
+        for (i++; i < U.col.n && U.col.r[i].lo <= hi; i++) {
             if (U.col.r[i].hi > hi) hi = U.col.r[i].hi;
+            shadow |= U.col.r[i].shadow;
+        }
+        vk_mem_no_touch = no_touch && !shadow;
         VkMemSpan sp;
         if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC)) {
@@ -292,6 +317,9 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         U.reg[U.nreg++] = (Reg){lo, hi, total, UINT64_MAX};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
+    vk_mem_no_touch = 0;
+    uint64_t skips = vk_mem_touch_skips;   // counted with U.subs, below
+    vk_mem_touch_skips = 0;
     uint64_t t_walk = kern_now_ns() - t0;
     if (!U.nreg || !(U.arena = arena_get(total))) {
         usnap_take_free(take);
@@ -331,6 +359,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0, U.walk_ns += t_walk;
+    U.skips += skips;
 }
 
 void vk_usnap_end(uint64_t fence) {

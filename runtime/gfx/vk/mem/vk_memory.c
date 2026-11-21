@@ -267,6 +267,9 @@ typedef struct { uint64_t gen, lo, hi, base, end; VkBuffer buf; VmaAllocation al
 #define RHIT_SLOTS 512
 static _Thread_local ResolveHit rhit[RHIT_SLOTS];
 
+_Thread_local int vk_mem_no_touch;
+_Thread_local uint64_t vk_mem_touch_skips;
+
 static ResolveHit *rhit_slot(uint64_t addr) { return &rhit[(addr >> 12 ^ addr >> 21) & (RHIT_SLOTS - 1)]; }
 
 static int resolve_check_on(void) {
@@ -293,7 +296,10 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->pool = h->pool;
         if (h->alloc) out->alloc_offset = out->offset;
         if (vk_guard_on() && h->pool) vk_guard_note(&((PoolRec *)h->pool)->use);
-        if (shadow_on && h->pool && ((PoolRec *)h->pool)->smap && !((PoolRec *)h->pool)->stouched) shadow_touch(h->pool);
+        if (shadow_on && h->pool && ((PoolRec *)h->pool)->smap && !((PoolRec *)h->pool)->stouched) {
+            if (vk_mem_no_touch) vk_mem_touch_skips++;
+            else shadow_touch(h->pool);
+        }
         if (race_on > 0 && h->pool && ((PoolRec *)h->pool)->smap) race_note(h->pool, addr, end);
         if (resolve_check_on()) {
             VkMemSpan s;
@@ -349,7 +355,10 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->buffer = r->buf;
         out->offset = addr - r->import_lo;
         out->avail = r->import_hi - addr;
-        if (r->smap && !r->stouched) shadow_touch(r);
+        if (r->smap && !r->stouched) {
+            if (vk_mem_no_touch) vk_mem_touch_skips++;
+            else shadow_touch(r);
+        }
         if (race_on > 0 && r->smap) race_note(r, addr, addr + size);
         if (vk_guard_on()) vk_guard_note(&r->use);
         ok = 1;
