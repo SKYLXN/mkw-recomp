@@ -9,7 +9,8 @@
 #define MAX_RANGE (64u << 10)
 #define CALL_DEPTH 16
 
-typedef struct { uint64_t lo, hi; } Rng;
+// shadow: some reader of the range binds the pool's shadow buffer, not the snapshot (vk_usnap.c MKW_USNAP_NO_TOUCH)
+typedef struct { uint64_t lo, hi; uint32_t shadow; } Rng;
 typedef struct { Rng *r; int n, cap; } RngVec;
 
 void usnap_collect(RngVec *v, const op_hdr *h, int depth);   // every OP_BIND_UBO range, aligned out to ALIGN
