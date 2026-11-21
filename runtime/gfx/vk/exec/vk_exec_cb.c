@@ -146,9 +146,70 @@ static int blk_hit(const Range *w, int n) {   // a page of w is in blk[0, n)
     return 0;
 }
 
+// MKW_WB_EARLY_PAR (default 0; "ab" in the B blocks only): each pass of vk_exec_cb_early splits its ready ranges at a
+// page into two halves, one run here and one on a helper thread. On the Deck the passes start at the value's last
+// vkQueueSubmit2 and took 3.37 ms a frame against a GPU tail of 3.2-3.4 ms, so 'GPU end -> reached' was 1.28-1.45 ms
+// with MKW_WB_EARLY against 0.42-0.46 without (deck8 ab-wb-early-1, tl_w.py), and main sleeps in nvnSyncWait meanwhile
+// (no guest thread on a virtual core 92 % of that time): a second thread is free, ~0.9 ms of the chain. No guest page
+// is touched by both threads (the per-page rules of vk_gpu_written hold), each half keeps wbr order (spend_oldest takes
+// the oldest overlapping entry), and both finish before any range is marked done or the next pass.
+typedef struct { PlatMutex m; PlatCond cv; Range **r; int n; uint32_t gen, done_gen; } WbJob;
+static WbJob wbp = {PLAT_MUTEX_INIT, PLAT_COND_INIT, NULL, 0, 0, 0};
+static int wbp_par = -1, wbp_state;   // wbp_state (completion thread): 0 no helper yet, 1 running, -1 spawn failed
+static Range **rdy, **srt;            // completion thread: a pass's ready ranges in wbr order; sorted, then side 1
+static int crdy, csrt;
+static uint64_t wbp_split, wbp_ranges, wbp_wait_ns;   // completion thread, since the last census line
+
+static void wb_helper(void *arg) {   // "vk wb": vk_gpu_written of the side posted, nothing else
+    (void)arg;
+    for (;;) {
+        plat_mutex_lock(&wbp.m);
+        while (wbp.gen == wbp.done_gen) plat_cond_wait(&wbp.cv, &wbp.m);
+        Range **r = wbp.r;
+        int n = wbp.n;
+        uint32_t g = wbp.gen;
+        plat_mutex_unlock(&wbp.m);
+        for (int i = 0; i < n; i++) vk_gpu_written(r[i]->addr, r[i]->size);
+        plat_mutex_lock(&wbp.m);
+        wbp.done_gen = g;
+        plat_cond_broadcast(&wbp.cv);
+        plat_mutex_unlock(&wbp.m);
+    }
+}
+
+static int by_addr(const void *a, const void *b) {
+    uint64_t x = (*(Range *const *)a)->addr, y = (*(Range *const *)b)->addr;
+    return (x > y) - (x < y);
+}
+
+// The page C splitting rdy[0, nr) into two halves of a third to two thirds of the weight each, with no range of the
+// lower one ending past C; 0 when there is none. Weight: size + 12 KiB, the census's ~1.3 us a range of <= 4 KiB
+// against ~11 GB/s at 1 MiB.
+static uint64_t wb_cut(int nr) {
+    while (csrt < nr) srt = grow(srt, &csrt, sizeof *srt);
+    memcpy(srt, rdy, sizeof *srt * (size_t)nr);
+    qsort(srt, (size_t)nr, sizeof *srt, by_addr);
+    uint64_t total = 0, cum = 0, runmax = 0;
+    for (int i = 0; i < nr; i++) total += rdy[i]->size + 12288;
+    for (int k = 0; k < nr && cum * 3 <= 2 * total; k++) {
+        uint64_t page = srt[k]->addr & ~0xfffull;
+        if (cum * 3 >= total && runmax <= page) return page;
+        cum += srt[k]->size + 12288;
+        uint64_t end = (srt[k]->addr + srt[k]->size + 0xfff) & ~0xfffull;
+        if (end > runmax) runmax = end;
+    }
+    return 0;
+}
+
 void vk_exec_cb_early(uint64_t fence) {   // completion thread
     int mode = wb_early_mode();
     if (!mode) return;
+    if (wbp_par < 0) {
+        wbp_par = rt_knob("WB_EARLY_PAR", "0");
+        if (wbp_par)
+            rt_log("vk: the write-backs before the fence split over two threads%s (MKW_WB_EARLY_PAR)",
+                   wbp_par == 2 ? " in the B blocks" : "");
+    }
     CbRes *rs[16];
     int nrs = 0, nx = 0, nw = 0, keep = 0;
     plat_mutex_lock(&live_lock);
@@ -191,12 +252,33 @@ void vk_exec_cb_early(uint64_t fence) {   // completion thread
                 blk_add(w->addr, w->size, &nb);
             }
         }
-        for (int i = 0; i < nw; i++) {
-            Range *w = wbr[i];
-            if (w->done || w->hold) continue;
-            vk_gpu_written(w->addr, w->size);   // live_lock not held
-            w->done = 1, wrote = 1, wbe_n++, wbe_bytes += w->size;
+        int nr = 0;
+        for (int i = 0; i < nw; i++)
+            if (!wbr[i]->done && !wbr[i]->hold) {
+                if (nr == crdy) rdy = grow(rdy, &crdy, sizeof *rdy);
+                rdy[nr++] = wbr[i];
+            }
+        uint64_t cut = nr >= 8 && wbp_state >= 0 && RT_KNOB_ON(wbp_par) ? wb_cut(nr) : 0;   // 0: serially
+        if (cut && !wbp_state) wbp_state = plat_thread_spawn(wb_helper, NULL, "vk wb", 0) ? 1 : -1;
+        int n1 = 0;
+        if (cut && wbp_state > 0) {   // side 1, from the cut's page up, to the helper (srt is free again)
+            for (int i = 0; i < nr; i++)
+                if (rdy[i]->addr >= cut) srt[n1++] = rdy[i];
+            plat_mutex_lock(&wbp.m);
+            wbp.r = srt, wbp.n = n1, wbp.gen++;
+            plat_cond_broadcast(&wbp.cv);
+            plat_mutex_unlock(&wbp.m);
+        } else cut = 0;
+        for (int i = 0; i < nr; i++)
+            if (!cut || rdy[i]->addr < cut) vk_gpu_written(rdy[i]->addr, rdy[i]->size);   // live_lock not held
+        if (cut) {
+            uint64_t tw = kern_now_ns();
+            plat_mutex_lock(&wbp.m);
+            while (wbp.done_gen != wbp.gen) plat_cond_wait(&wbp.cv, &wbp.m);
+            plat_mutex_unlock(&wbp.m);
+            wbp_wait_ns += kern_now_ns() - tw, wbp_split++, wbp_ranges += (uint64_t)n1;
         }
+        for (int i = 0; i < nr; i++) rdy[i]->done = 1, wrote = 1, wbe_n++, wbe_bytes += rdy[i]->size;
     }
     wbe_held += held, wbe_ns += kern_now_ns() - t0;
 }
@@ -223,6 +305,12 @@ static void cb_done(void *arg) {   // completion thread
                "%llu (%.1f MiB) at the fence, %llu held back by another write of their pages (MKW_WB_EARLY)",
                (unsigned long long)wbe_n, wbe_bytes / 1048576.0, wbe_ns / 1e6 / 600, (unsigned long long)wbf_n,
                wbf_bytes / 1048576.0, (unsigned long long)wbe_held);
+        if (wbp_par > 0) {
+            rt_log("vk: early write-backs on two threads over 600 submissions: %llu passes split, %llu ranges on the "
+                   "helper, %.2f ms a submission waiting for it (MKW_WB_EARLY_PAR)",
+                   (unsigned long long)wbp_split, (unsigned long long)wbp_ranges, wbp_wait_ns / 1e6 / 600);
+            wbp_split = wbp_ranges = wbp_wait_ns = 0;
+        }
         wbe_n = wbe_bytes = wbe_ns = wbf_n = wbf_bytes = wbe_held = wb_subs = 0;
     }
     for (int i = 0; i < r->npools; i++) {
