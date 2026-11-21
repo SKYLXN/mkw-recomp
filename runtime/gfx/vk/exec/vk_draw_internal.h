@@ -81,14 +81,19 @@ extern _Thread_local int pd_on DRAW_SHARED;            // MKW_TRACE=draw timing 
 
 // MKW_DRAW_LEAN (default 0; "ab": in the B blocks), vk_exec_draw.c: output-identical cuts of the per-draw path (an
 // unchanged fragment texture bind keeps the feedback memo, c0 compared by its inputs, memo lines prefetched at the
-// bind, the shader memo keyed on what shader_for reads). Tested at each use, so "ab" switches per op and per draw:
-// every memo it keeps is validated against live state in both modes.
+// bind, the shader memo keyed on what shader_for reads). Under "ab" the block is sampled once per draw and command
+// buffer (draw_lean_sample): rt_ab() reads the clock and divides twice, ~50 ns, and the tests run ~30k times a frame.
+// Every memo it keeps is validated against live state in both modes, so the flip may land anywhere.
 extern int draw_lean_mode DRAW_SHARED;
+extern _Thread_local int lean_ab DRAW_SHARED;
 int draw_lean_read(void) DRAW_SHARED;
 static inline int draw_lean(void) {
     int m = __atomic_load_n(&draw_lean_mode, __ATOMIC_ACQUIRE);
     if (m < 0) m = draw_lean_read();
-    return RT_KNOB_ON(m);
+    return m == 2 ? lean_ab : m;
+}
+static inline void draw_lean_sample(void) {
+    if (__atomic_load_n(&draw_lean_mode, __ATOMIC_RELAXED) == 2) lean_ab = rt_ab();
 }
 // Since the last census line: feedback_scan calls and full scans, fragment texture binds and the unchanged ones, c0
 // banks matched by their storage slots and shader memo hits by the short key (the last two only in MKW_DRAW_LEAN's on blocks)

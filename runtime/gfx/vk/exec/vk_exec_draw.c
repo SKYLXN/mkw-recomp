@@ -58,6 +58,7 @@ _Thread_local int pd_on;
 // feedback scan reran on almost every draw (0.52 us) because every texture bind bumped tex_serial, c0 compared a 2 KiB
 // input struct (0.50), and a texture memo hit cost a cold line (0.13-0.15 us, ~5.4 a draw).
 int draw_lean_mode = -1;
+_Thread_local int lean_ab;
 _Thread_local uint64_t lean_n[6];
 
 int draw_lean_read(void) {
@@ -74,6 +75,7 @@ int draw_lean_read(void) {
 void vk_exec_draw_new_cb(void) {
     vk_exec_draw_thread();
     memset(&B, 0, sizeof B);
+    draw_lean_sample();
     // a queue swap (vk_exec.c) or a MKW_REPLAY_PAR chunk replaces *ex without a bind op: bind_sig's fast path would keep
     // RS.body from the other state, and a later bind restoring those bytes would skip the build. ~7 slow compares a frame.
     bind_gen++;
@@ -355,17 +357,20 @@ static SubRange sampled_sub(uint64_t h) {
 // Attachments of the open pass the fragment shader fs samples; kept while the shader, the texture bindings and the
 // pass stay the same. Under MKW_DRAW_LEAN tex_serial moves only when a fragment texture bind changes a handle, so the
 // slot registry's generation joins the key: with all of it equal a rescan reads the same handles, slots and attachments.
+// The generation is in the key in both modes: binds of a B block leave tex_serial alone, and an A draw after the flip
+// must still see a slot that resolves differently.
 static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     uint32_t gen = vk_texture_slots_gen();   // before any lookup
+    int memo = td_mode();
     lean_n[0]++;
-    if (ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial &&
-        (!draw_lean() || ex->fb_gen == gen))
-        return ex->fb_sampled;
+    int hit = ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial && ex->fb_gen == gen;
+    // MKW_TEX_MEMO=check rescans a hit and stops on a difference (the only check of the lean key); =0 trusts a hit only
+    // without MKW_DRAW_LEAN, as before it
+    if (hit && (memo == 1 || (memo == 0 && !draw_lean()))) return ex->fb_sampled;
     lean_n[1]++;
     const GfxShaderRes *res;
     int n = gfx_shader_resources(fs, GFX_RES_TEX, &res);
     uint32_t m = 0;
-    int memo = td_mode();
     for (int r = 0; r < n; r++)
         for (int k = 0; k < (res[r].count ? res[r].count : 1); k++) {
             int slot = res[r].slot + k;
@@ -387,6 +392,8 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
             if (tok) *f = (typeof(*f)){.h = h, .tok = tok, .gen = gen, .r = sr};
             else f->h = 0;
         }
+    if (hit && memo == 2 && m != ex->fb_sampled)
+        rt_fatal("vk_exec: feedback scan memo %#x differs from a scan %#x", ex->fb_sampled, m);
     ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_gen = gen, ex->fb_pass = ex->pass_serial, ex->fb_sampled = m;
     return m;
 }
@@ -530,6 +537,7 @@ _Thread_local uint64_t pd_tsc[PD_N], pd_n;
 
 int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int mesh) {
     pd_on = (rt_trace & RT_TRACE_DRAW) != 0;
+    draw_lean_sample();
     if (pd_on) pd_t = plat_cycles(), pd_n++;
     if (ex->render_disabled) {
         if (vk_cond_trace > 0) {
