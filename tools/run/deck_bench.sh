@@ -59,11 +59,10 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs m
 # set to ab, or the pair is reported void. A switch given as MKW_<NAME>=<value> is set as is (a B-block value such as
 # MKW_SPLIT_US_B, which logs no such line: not checked).
 # Words after the switch are set as is in both runs (what the pair needs in A and B alike).
-AB_PAIRS=(
-  "ab-wb-early:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
-  "ab-fence-early:MKW_FENCE_EARLY MKW_EARLY_DEDUP=1:B = the game's fence wait ends once the frame is recorded (guard on)"
-  "ab-fence-early-g0:MKW_FENCE_EARLY MKW_FENCE_EARLY_GUARD=0 MKW_EARLY_DEDUP=1:B = the same without the shadow-copy guard (a measurement: a wrong object for a frame is possible)"
-  "ab-reuse:MKW_REUSE MKW_DRAW_CACHE=1:B = draws equal to an earlier submission's re-emit their packets (A: the draw cache alone); last, it may fail"
+AB_PAIRS=(   # MKW_WB_EARLY three times: one pair gave -2.25 ms (means) against a scene term of 5.5 ms
+  "ab-wb-early-1:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
+  "ab-wb-early-2:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
+  "ab-wb-early-3:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
