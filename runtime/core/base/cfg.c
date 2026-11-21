@@ -308,9 +308,12 @@ int cfg_reload_key(const char *name) {
 // MKW_GPU_CLOCKS=ab -3.3 and -3.7 ms a frame (GPU busy -2.6 ms; 1243-1289 MHz, 10.5-10.8 W, 68 against 64 C), unlike
 // the 660M's +1.9 ms (vk_pstate.c): the Deck's CPU keeps its clock at that power; MKW_REPLAY_CORE=ab -2.2 and -4.1 ms
 // (the replay -2.8 ms). One pair each, a Deck LCD (Jupiter) not measured yet.
+// WB_EARLY 1: the write-backs of ranges the GPU has finished run before the fence instead of after it, shortening the
+// completion step that holds the game's fence wait. Four pairs with the profile above (20-21/11/2026): -1.66 to -3.69
+// ms a frame each, pooled -2.62 ms (means) and -3.00 ms (medians) against a scene term of 5.3 ms.
 static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"VK_PRESENT", "fifo"}, {"RESOLUTION", "720"},
-    {"GPU_CLOCKS", "peak"}, {"REPLAY_CORE", "1"},
+    {"GPU_CLOCKS", "peak"}, {"REPLAY_CORE", "1"}, {"WB_EARLY", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck
 
