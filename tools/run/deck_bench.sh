@@ -59,10 +59,10 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/mkw-recomp   # where AppRun installs m
 # set to ab, or the pair is reported void. A switch given as MKW_<NAME>=<value> is set as is (a B-block value such as
 # MKW_SPLIT_US_B, which logs no such line: not checked).
 # Words after the switch are set as is in both runs (what the pair needs in A and B alike).
-AB_PAIRS=(   # MKW_WB_EARLY three times: one pair gave -2.25 ms (means) against a scene term of 5.5 ms
-  "ab-wb-early-1:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
-  "ab-wb-early-2:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
-  "ab-wb-early-3:MKW_WB_EARLY:B = write-backs of ranges the GPU has finished run before the fence"
+AB_PAIRS=(   # MKW_WB_EARLY_PAR three times, on top of the profile's MKW_WB_EARLY: ~0.9 ms expected, scene term 3-6 ms
+  "ab-wb-early-par-1:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
+  "ab-wb-early-par-2:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
+  "ab-wb-early-par-3:MKW_WB_EARLY_PAR:B = early write-back passes split over two threads"
 )
 AB_KNOWN=(
   "ab-known-replay-par:MKW_REPLAY_PAR:B = chunked recording on; Deck default off"
@@ -357,7 +357,7 @@ report() {   # NAME RC SECONDS [SWITCH]: a few lines in report.txt; NAME.med kee
     printf '%s: exit %s after %ss; race reached: %s\n' "$name" "$rc" "$secs" "$([ "${started:-0}" -gt 0 ] && echo yes || echo NO)"
     [ -n "$fatal" ] && printf '  FATAL: %s\n' "$fatal"
     if [ -n "$sw" ]; then   # the switch must say it acts in the B blocks, else the A/B compared A with A
-      if ! grep -qE "in the B blocks.*\\(${sw}" "$log" || grep -q 'stable pstate .* was refused' "$log"; then
+      if ! grep -qE "in the B blocks.*\\(${sw}[),]" "$log" || grep -q 'stable pstate .* was refused' "$log"; then
         why=$(grep -m1 -E "\(${sw}|vk: GPU clocks" "$log")
         printf '  A/B VOID: %s did not act in the B blocks (%s)\n' "$sw" "${why:-no line about it in the log}"
       fi

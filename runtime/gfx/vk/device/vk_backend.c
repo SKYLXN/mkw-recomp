@@ -391,7 +391,8 @@ static void replay_core(void) {
     int on = RT_KNOB_ON(mode), fon = fmode ? RT_KNOB_ON(fmode) : 0, son = smode ? RT_KNOB_ON(smode) : 0,
         hon = hmode ? RT_KNOB_ON(hmode) : 0, state = on | fon << 1 | son << 2 | hon << 3,
         helpers = !!vk_sync_submit_thread() + !!present_thread + (hmode ? !!vk_sync_completion_thread() * 4 +
-                                                                      !!vk_mem_shadow_thread() * 8 : 0);
+                                                                      !!vk_mem_shadow_thread() * 8 +
+                                                                      !!vk_exec_cb_wb_thread() * 16 : 0);
     if (state == applied && helpers == placed) return;
     uint64_t base = fon ? fast : all, others = on ? base & ~plat_cpu_core_of(c) : base;
     if (state != applied) {
@@ -400,6 +401,8 @@ static void replay_core(void) {
     }
     if (mode) helpers_place(on && !son ? own : others);
     if (hmode) sibling_place(on && hon ? sib : others);   // (plat_process_affinity put them with the others)
+    // "vk wb" (MKW_WB_EARLY_PAR) inherits the completion thread's mask: with the others, or its two halves share sib
+    if (hmode && vk_exec_cb_wb_thread()) plat_thread_affinity(vk_exec_cb_wb_thread(), others);
     applied = state, placed = helpers;
 }
 

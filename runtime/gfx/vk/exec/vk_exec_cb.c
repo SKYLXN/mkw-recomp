@@ -153,18 +153,26 @@ static int blk_hit(const Range *w, int n) {   // a page of w is in blk[0, n)
 // (no guest thread on a virtual core 92 % of that time): a second thread is free, ~0.9 ms of the chain. No guest page
 // is touched by both threads (the per-page rules of vk_gpu_written hold), each half keeps wbr order (spend_oldest takes
 // the oldest overlapping entry), and both finish before any range is marked done or the next pass.
-typedef struct { PlatMutex m; PlatCond cv; Range **r; int n; uint32_t gen, done_gen; } WbJob;
-static WbJob wbp = {PLAT_MUTEX_INIT, PLAT_COND_INIT, NULL, 0, 0, 0};
+// The helper runs on the frame's processors, shared with the game's threads, so the completion thread takes side 1
+// back when the helper has not started it by the time side 0 is done (wbp_back counts them: a slow wake, not a slow
+// helper). taken: side 1 started, by either thread.
+typedef struct { PlatMutex m; PlatCond cv; Range **r; int n, taken; uint32_t gen, done_gen; } WbJob;
+static WbJob wbp = {PLAT_MUTEX_INIT, PLAT_COND_INIT, NULL, 0, 0, 0, 0};
+// Kept, not detached: vk_backend.c replay_core puts it on the frame's processors, since it inherits the completion
+// thread's mask, the replay core's other processor alone under MKW_SIBLING_HELPERS.
+static PlatThread *wb_thread;
+PlatThread *vk_exec_cb_wb_thread(void) { return __atomic_load_n(&wb_thread, __ATOMIC_ACQUIRE); }
 static int wbp_par = -1, wbp_state;   // wbp_state (completion thread): 0 no helper yet, 1 running, -1 spawn failed
 static Range **rdy, **srt;            // completion thread: a pass's ready ranges in wbr order; sorted, then side 1
 static int crdy, csrt;
-static uint64_t wbp_split, wbp_ranges, wbp_wait_ns;   // completion thread, since the last census line
+static uint64_t wbp_split, wbp_ranges, wbp_wait_ns, wbp_back;   // completion thread, since the last census line
 
 static void wb_helper(void *arg) {   // "vk wb": vk_gpu_written of the side posted, nothing else
     (void)arg;
     for (;;) {
         plat_mutex_lock(&wbp.m);
-        while (wbp.gen == wbp.done_gen) plat_cond_wait(&wbp.cv, &wbp.m);
+        while (wbp.gen == wbp.done_gen || wbp.taken) plat_cond_wait(&wbp.cv, &wbp.m);
+        wbp.taken = 1;
         Range **r = wbp.r;
         int n = wbp.n;
         uint32_t g = wbp.gen;
@@ -259,13 +267,17 @@ void vk_exec_cb_early(uint64_t fence) {   // completion thread
                 rdy[nr++] = wbr[i];
             }
         uint64_t cut = nr >= 8 && wbp_state >= 0 && RT_KNOB_ON(wbp_par) ? wb_cut(nr) : 0;   // 0: serially
-        if (cut && !wbp_state) wbp_state = plat_thread_spawn(wb_helper, NULL, "vk wb", 0) ? 1 : -1;
+        if (cut && !wbp_state) {
+            PlatThread *t = plat_thread_new_ex(wb_helper, NULL, "vk wb", 0);
+            __atomic_store_n(&wb_thread, t, __ATOMIC_RELEASE);
+            wbp_state = t ? 1 : -1;
+        }
         int n1 = 0;
         if (cut && wbp_state > 0) {   // side 1, from the cut's page up, to the helper (srt is free again)
             for (int i = 0; i < nr; i++)
                 if (rdy[i]->addr >= cut) srt[n1++] = rdy[i];
             plat_mutex_lock(&wbp.m);
-            wbp.r = srt, wbp.n = n1, wbp.gen++;
+            wbp.r = srt, wbp.n = n1, wbp.taken = 0, wbp.gen++;
             plat_cond_broadcast(&wbp.cv);
             plat_mutex_unlock(&wbp.m);
         } else cut = 0;
@@ -274,9 +286,18 @@ void vk_exec_cb_early(uint64_t fence) {   // completion thread
         if (cut) {
             uint64_t tw = kern_now_ns();
             plat_mutex_lock(&wbp.m);
+            int back = !wbp.taken;
+            if (back) {   // the helper has not started: side 1 here, whole, in wbr order
+                wbp.taken = 1;
+                plat_mutex_unlock(&wbp.m);
+                for (int i = 0; i < n1; i++) vk_gpu_written(srt[i]->addr, srt[i]->size);
+                plat_mutex_lock(&wbp.m);
+                wbp.done_gen = wbp.gen;
+            }
             while (wbp.done_gen != wbp.gen) plat_cond_wait(&wbp.cv, &wbp.m);
             plat_mutex_unlock(&wbp.m);
-            wbp_wait_ns += kern_now_ns() - tw, wbp_split++, wbp_ranges += (uint64_t)n1;
+            wbp_split++, wbp_back += (uint64_t)back;
+            if (!back) wbp_wait_ns += kern_now_ns() - tw, wbp_ranges += (uint64_t)n1;
         }
         for (int i = 0; i < nr; i++) rdy[i]->done = 1, wrote = 1, wbe_n++, wbe_bytes += rdy[i]->size;
     }
@@ -306,10 +327,11 @@ static void cb_done(void *arg) {   // completion thread
                (unsigned long long)wbe_n, wbe_bytes / 1048576.0, wbe_ns / 1e6 / 600, (unsigned long long)wbf_n,
                wbf_bytes / 1048576.0, (unsigned long long)wbe_held);
         if (wbp_par > 0) {
-            rt_log("vk: early write-backs on two threads over 600 submissions: %llu passes split, %llu ranges on the "
-                   "helper, %.2f ms a submission waiting for it (MKW_WB_EARLY_PAR)",
-                   (unsigned long long)wbp_split, (unsigned long long)wbp_ranges, wbp_wait_ns / 1e6 / 600);
-            wbp_split = wbp_ranges = wbp_wait_ns = 0;
+            rt_log("vk: early write-backs on two threads over 600 submissions: %llu passes split, %llu taken back "
+                   "(helper not started), %llu ranges on the helper, %.2f ms a submission waiting for it "
+                   "(MKW_WB_EARLY_PAR)", (unsigned long long)wbp_split, (unsigned long long)wbp_back,
+                   (unsigned long long)wbp_ranges, wbp_wait_ns / 1e6 / 600);
+            wbp_split = wbp_ranges = wbp_wait_ns = wbp_back = 0;
         }
         wbe_n = wbe_bytes = wbe_ns = wbf_n = wbf_bytes = wbe_held = wb_subs = 0;
     }
